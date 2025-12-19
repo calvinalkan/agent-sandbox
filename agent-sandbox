@@ -202,9 +202,9 @@ BWRAP_ARGS+=(
   # Docker socket (resolved from symlink)
   --bind-try "$DOCKER_SOCK" "$DOCKER_SOCK"
 
-  # 1Password CLI (for gh auth via op)
-  --bind-try /run/user/1000/op-daemon.pid /run/user/1000/op-daemon.pid
-  --bind-try /run/user/1000/op-daemon.sock /run/user/1000/op-daemon.sock
+  # NOTE: 1Password CLI does not work inside bwrap sandboxes.
+  # 1Password detects the mount namespace and rejects connections for security.
+  # Use `gh` commands outside the sandbox, or pre-authenticate with a token.
 
   # Required virtual filesystems
   --dev /dev
