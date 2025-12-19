@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Sandbox wrapper for coding agents using bwrap for filesystem protection
+# Usage: agent-sandbox <agent> [args...]
+#
+# Supported agents: claude, pi, opencode, codex
+#
+# How the sandbox works:
+#
+#   Mount order (later mounts overlay earlier ones):
+#   1. --ro-bind / /           Everything read-only as base
+#   2. --bind $HOME $HOME      Home directory writable (allows creating new files)
+#   3. --ro-bind $HOME/<item>  Each existing file/dir in home read-only (except WRITABLE_PATHS)
+#   4. --bind-try <paths>      Specific paths made writable (agent configs, $PWD, etc.)
+#
+#   This allows agents to create temp files (e.g. .claude.json.tmp.xxx for atomic writes)
+#   while protecting existing home directory content from modification.
+
+show_help() {
+  cat <<HELP
+Usage: agent-sandbox <command> [args...]
+
+Agents (with special flags):
+  claude    - runs with --permission-mode acceptEdits
+  pi        - runs as-is
+  opencode  - runs as-is (see note below)
+  codex     - runs with --sandbox danger-full-access
+
+Any other command runs as-is in the sandbox.
+
+Examples:
+  agent-sandbox claude -p "refactor this function"
+  agent-sandbox pi "explain this code"
+  agent-sandbox bun install
+  agent-sandbox ls -la /
+
+The sandbox provides filesystem protection:
+  ✓ Write access: current directory, /tmp, agent's own config
+  ✗ Read-only: everything else
+  ✓ Network: full access (localhost, internet)
+  ✓ Docker: available
+
+OpenCode note:
+  Since the sandbox handles filesystem protection, consider adding this
+  to your ~/.config/opencode/config.json to skip redundant prompts:
+
+    "permission": {
+      "external_directory": "allow"
+    }
+HELP
+}
+
+if [[ $# -eq 0 ]] || [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
+if [[ "${1:-}" == "--print" ]]; then
+  PRINT_ONLY=true
+  shift
+  AGENT="${1:-}"
+  [[ -n "$AGENT" ]] && shift
+else
+  PRINT_ONLY=false
+  if [[ $# -eq 0 ]]; then
+    echo "Error: No agent specified" >&2
+    echo "Usage: agent-sandbox <agent> [args...]" >&2
+    exit 1
+  fi
+  AGENT="$1"
+  shift
+fi
+
+# Prevent running in home directory
+if [[ "$PWD" == "$HOME" ]]; then
+  echo "Error: Cannot run agent-sandbox in home directory" >&2
+  exit 1
+fi
+
+# Determine agent command
+AGENT_CMD=()
+case "$AGENT" in
+  claude)
+    AGENT_CMD=(claude --permission-mode acceptEdits)
+    ;;
+  pi)
+    AGENT_CMD=(pi)
+    ;;
+  opencode)
+    AGENT_CMD=(opencode)
+    ;;
+  codex)
+    AGENT_CMD=(codex --sandbox danger-full-access)
+    ;;
+  "")
+    # No agent (only valid with --print)
+    if [[ "$PRINT_ONLY" != true ]]; then
+      echo "Error: No command specified" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    # Run arbitrary command
+    AGENT_CMD=("$AGENT")
+    ;;
+esac
+
+# Resolve docker socket path (may be behind symlink)
+DOCKER_SOCK="/var/run/docker.sock"
+if [[ -e "$DOCKER_SOCK" ]]; then
+  DOCKER_SOCK="$(readlink -f "$DOCKER_SOCK")"
+fi
+
+# ============================================================================
+# BWRAP MOUNT CONFIGURATION
+# ============================================================================
+#
+# Mount order matters - later mounts overlay earlier ones:
+#
+#   1. --ro-bind / /             Base: everything read-only
+#   2. --bind $HOME $HOME        Home writable (allows new file creation)
+#   3. --ro-bind $HOME/<item>    Protect existing home contents (except WRITABLE_PATHS)
+#   4. --bind-try <paths>        Make specific paths writable
+#
+# This design allows agents to:
+#   - Create temp files for atomic writes (e.g. .claude.json.tmp.xxx)
+#   - Modify their own config files
+#   - Work in $PWD
+# While protecting:
+#   - All system files
+#   - Existing home directory content (except explicit exceptions)
+#   - Git hooks and config
+# ============================================================================
+
+BWRAP_ARGS=(
+  --die-with-parent
+  --share-net
+  --setenv IN_SANDBOX 1
+
+  # Step 1: Read-only root filesystem
+  --ro-bind / /
+
+  # Step 2: Writable home directory (enables new file creation for atomic writes)
+  --bind "$HOME" "$HOME"
+)
+
+# Paths that should remain writable (excluded from ro-bind protection)
+WRITABLE_PATHS=(
+  # Agent configs
+  "$HOME/.claude"
+  "$HOME/.claude.json"
+  "$HOME/.pi"
+  "$HOME/.opencode"
+  "$HOME/.codex"
+  # Build tools
+  "$HOME/.bun"
+  # Development
+  "$HOME/code/experiments"
+)
+
+# Convert to associative array for O(1) lookup
+declare -A WRITABLE_SET
+for p in "${WRITABLE_PATHS[@]}"; do
+  WRITABLE_SET["$p"]=1
+done
+
+# Step 3: Protect existing home directory contents with ro-bind overlays
+# Files/dirs in WRITABLE_PATHS are skipped so they remain writable
+while IFS= read -r -d '' item; do
+  if [[ -z "${WRITABLE_SET[$item]:-}" ]]; then
+    BWRAP_ARGS+=(--ro-bind "$item" "$item")
+  fi
+done < <(find "$HOME" -maxdepth 1 -mindepth 1 -print0)
+
+# Step 4: Explicit writable paths (some overlap with WRITABLE_PATHS for clarity)
+BWRAP_ARGS+=(
+  # Current working directory
+  --bind "$PWD" "$PWD"
+
+  # Temp directory
+  --bind /tmp /tmp
+
+  # Agent config directories and files
+  --bind-try "$HOME/.claude" "$HOME/.claude"
+  --bind-try "$HOME/.claude.json" "$HOME/.claude.json"
+  --bind-try "$HOME/.pi" "$HOME/.pi"
+  --bind-try "$HOME/.opencode" "$HOME/.opencode"
+  --bind-try "$HOME/.codex" "$HOME/.codex"
+  --bind-try "$HOME/.local/share/opencode" "$HOME/.local/share/opencode"
+  --bind-try "$HOME/.config/opencode" "$HOME/.config/opencode"
+
+  # Development directories
+  --bind-try "$HOME/code/experiments" "$HOME/code/experiments"
+
+  # Wrangler config (for Cloudflare dev servers)
+  --bind-try "$HOME/.config/.wrangler" "$HOME/.config/.wrangler"
+
+  # Bun cache (for bun install)
+  --bind-try "$HOME/.bun" "$HOME/.bun"
+
+  # Docker socket (resolved from symlink)
+  --bind-try "$DOCKER_SOCK" "$DOCKER_SOCK"
+
+  # 1Password CLI (for gh auth via op)
+  --bind-try /run/user/1000/op-daemon.pid /run/user/1000/op-daemon.pid
+  --bind-try /run/user/1000/op-daemon.sock /run/user/1000/op-daemon.sock
+
+  # Required virtual filesystems
+  --dev /dev
+  --proc /proc
+)
+
+
+# Protect .git/hooks and .git/config (only if .git is a directory, not a worktree file)
+if [[ -d "$PWD/.git" ]]; then
+  BWRAP_ARGS+=(
+    --ro-bind-try "$PWD/.git/hooks" "$PWD/.git/hooks"
+    --ro-bind-try "$PWD/.git/config" "$PWD/.git/config"
+  )
+fi
+
+# Handle git worktrees (where .git is a file, not a directory)
+if [[ -f "$PWD/.git" ]]; then
+  WORKTREE_GITDIR="$(sed -n 's/^gitdir: //p' "$PWD/.git")"
+  if [[ -n "$WORKTREE_GITDIR" && -d "$WORKTREE_GITDIR" ]]; then
+    # Bind worktree-specific gitdir
+    BWRAP_ARGS+=(
+      --bind "$WORKTREE_GITDIR" "$WORKTREE_GITDIR"
+      --ro-bind-try "$WORKTREE_GITDIR/hooks" "$WORKTREE_GITDIR/hooks"
+      --ro-bind-try "$WORKTREE_GITDIR/config" "$WORKTREE_GITDIR/config"
+    )
+    # Also bind the main .git directory (commondir) where objects/refs live
+    if [[ -f "$WORKTREE_GITDIR/commondir" ]]; then
+      COMMONDIR="$(cd "$WORKTREE_GITDIR" && cd "$(cat commondir)" && pwd)"
+      if [[ -n "$COMMONDIR" && -d "$COMMONDIR" ]]; then
+        BWRAP_ARGS+=(
+          --bind "$COMMONDIR" "$COMMONDIR"
+          --ro-bind-try "$COMMONDIR/hooks" "$COMMONDIR/hooks"
+          --ro-bind-try "$COMMONDIR/config" "$COMMONDIR/config"
+        )
+      fi
+    fi
+  fi
+fi
+
+# Allow creating sibling worktrees if current dir is a git worktree
+if [[ -f "$PWD/.git" ]]; then
+  WORKTREES_PARENT="$(dirname "$PWD")"
+  BWRAP_ARGS+=(--bind "$WORKTREES_PARENT" "$WORKTREES_PARENT")
+fi
+
+if [[ "$PRINT_ONLY" == true ]]; then
+  echo "bwrap ${BWRAP_ARGS[*]}${AGENT_CMD[*]:+ ${AGENT_CMD[*]}}${*:+ $*}"
+else
+  exec bwrap "${BWRAP_ARGS[@]}" "${AGENT_CMD[@]}" "$@"
+fi
