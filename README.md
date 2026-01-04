@@ -13,8 +13,45 @@ Filesystem-protected wrapper for coding agents using [bwrap](https://github.com/
 | `$PWD` | Writable (working directory) |
 | `/tmp` | Writable |
 | `.git/hooks`, `.git/config` | Read-only (protected) |
+| Linting/formatting configs | Read-only (protected) |
+| `backpressure/` directory | Read-only (protected) |
 | Network | Full access (localhost, internet) |
 | Docker | Available |
+
+## Protected configs (read-only)
+
+Agents often try to disable or weaken linting rules when they get stuck. The sandbox protects these configs by mounting them read-only.
+
+### Linting/formatting configs
+
+Found recursively in `$PWD`:
+
+| Language | Protected files |
+|----------|-----------------|
+| Go | `.golangci.yml`, `.golangci.yaml`, `.golangci.toml`, `.golangci.json`, `golangci.yml` |
+| TypeScript/JS | `biome.json`, `biome.jsonc`, `.oxlintrc.json`, `oxlint.json` |
+| TypeScript/JS | `.eslintrc*`, `eslint.config.*`, `.prettierrc*`, `prettier.config.*` |
+| TypeScript | `tsconfig.json`, `tsconfig.*.json` |
+| Python | `pyproject.toml`, `ruff.toml`, `.ruff.toml`, `.flake8`, `.mypy.ini`, `.pylintrc` |
+| General | `.editorconfig` |
+
+### The `backpressure/` directory
+
+Place custom rules, lint scripts, or agent instructions in a `backpressure/` directory at the project root. All files inside are mounted read-only, preventing agents from modifying or deleting them.
+
+Example use cases:
+- Custom lint wrapper scripts
+- Project-specific agent rules (e.g., `rules.md`)
+- Pre-commit hooks or validation scripts
+
+```
+myproject/
+├── backpressure/
+│   ├── rules.md          # "Never disable strict mode"
+│   └── lint.sh           # Custom lint script
+├── src/
+└── ...
+```
 
 ## How it works
 

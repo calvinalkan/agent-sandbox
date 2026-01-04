@@ -164,6 +164,7 @@ WRITABLE_PATHS=(
   # Build tools
   "$HOME/.bun"
   "$HOME/.cache"
+  "$HOME/go"
   # Development
   "$HOME/code/experiments"
   "$HOME/code/worktrees"
@@ -213,6 +214,9 @@ BWRAP_ARGS+=(
   # Cache directory (uv, pip, etc.)
   --bind-try "$HOME/.cache" "$HOME/.cache"
 
+  # Go modules and binaries
+  --bind-try "$HOME/go" "$HOME/go"
+
   # Docker socket (resolved from symlink)
   --bind-try "$DOCKER_SOCK" "$DOCKER_SOCK"
 
@@ -225,6 +229,53 @@ BWRAP_ARGS+=(
   --proc /proc
 )
 
+
+# ============================================================================
+# LINTING/FORMATTING CONFIG PROTECTION
+# ============================================================================
+# Protect linting and formatting configs from being disabled/weakened by agents.
+# These are found recursively in $PWD and mounted read-only.
+
+LINT_CONFIG_PATTERNS=(
+  # Go
+  ".golangci.yml" ".golangci.yaml" ".golangci.toml" ".golangci.json"
+  "golangci.yml" "golangci.yaml"
+  # TypeScript/JavaScript (Biome, Oxlint, ESLint, Prettier)
+  "biome.json" "biome.jsonc"
+  ".oxlintrc.json" "oxlintrc.json" "oxlint.json"
+  ".eslintrc" ".eslintrc.js" ".eslintrc.cjs" ".eslintrc.json" ".eslintrc.yml" ".eslintrc.yaml"
+  "eslint.config.js" "eslint.config.mjs" "eslint.config.cjs"
+  ".prettierrc" ".prettierrc.js" ".prettierrc.cjs" ".prettierrc.json" ".prettierrc.yml" ".prettierrc.yaml" ".prettierrc.toml"
+  "prettier.config.js" "prettier.config.cjs" "prettier.config.mjs"
+  # TypeScript
+  "tsconfig.json" "tsconfig.*.json"
+  # Python (Ruff, etc.)
+  "pyproject.toml" "ruff.toml" ".ruff.toml"
+  ".flake8" ".mypy.ini" "mypy.ini" ".pylintrc" "pylintrc"
+  # General
+  ".editorconfig"
+)
+
+# Build find expression for all patterns
+FIND_ARGS=()
+for pattern in "${LINT_CONFIG_PATTERNS[@]}"; do
+  if [[ ${#FIND_ARGS[@]} -gt 0 ]]; then
+    FIND_ARGS+=("-o")
+  fi
+  FIND_ARGS+=("-name" "$pattern")
+done
+
+# Find and protect all matching config files
+while IFS= read -r -d '' config_file; do
+  BWRAP_ARGS+=(--ro-bind-try "$config_file" "$config_file")
+done < <(find "$PWD" -type f \( "${FIND_ARGS[@]}" \) -print0 2>/dev/null)
+
+# Protect backpressure directory (agent rules/config) in project root
+if [[ -d "$PWD/backpressure" ]]; then
+  while IFS= read -r -d '' bp_file; do
+    BWRAP_ARGS+=(--ro-bind-try "$bp_file" "$bp_file")
+  done < <(find "$PWD/backpressure" -type f -print0 2>/dev/null)
+fi
 
 # Protect .git/hooks and .git/config (only if .git is a directory, not a worktree file)
 if [[ -d "$PWD/.git" ]]; then
