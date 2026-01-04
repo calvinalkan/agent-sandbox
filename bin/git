@@ -1,0 +1,53 @@
+#!/bin/bash
+# Sandbox git wrapper - blocks file restoration commands
+
+blocked() {
+  echo "sandbox: blocked '$1'" >&2
+  echo "This is a protected operation. Do NOT attempt workarounds." >&2
+  echo "If essential, ask the operator to run this command outside the sandbox." >&2
+  exit 1
+}
+
+case "$1" in
+  checkout)
+    # Block: git checkout -- <file>
+    # Block: git checkout <tree-ish> -- <file>
+    # Allow: git checkout <branch>
+    for arg in "$@"; do
+      if [[ "$arg" == "--" ]]; then
+        blocked "git checkout -- <pathspec>"
+      fi
+    done
+    ;;
+  restore)
+    # Block all git restore (it only restores files, no other use)
+    blocked "git restore"
+    ;;
+  reset)
+    # Block: git reset --hard (overwrites working tree)
+    for arg in "$@"; do
+      if [[ "$arg" == "--hard" ]]; then
+        blocked "git reset --hard"
+      fi
+    done
+    ;;
+  clean)
+    # Block: git clean -f (deletes untracked files)
+    for arg in "$@"; do
+      if [[ "$arg" == "-f" || "$arg" == "--force" || "$arg" =~ ^-[a-zA-Z]*f ]]; then
+        blocked "git clean -f"
+      fi
+    done
+    ;;
+  checkout-index)
+    # Block: git checkout-index (low-level file restoration)
+    blocked "git checkout-index"
+    ;;
+esac
+
+# Auto-skip GPG signing for commits (agents can't sign)
+if [[ "$1" == "commit" ]]; then
+  exec /usr/bin/git commit --no-gpg-sign "${@:2}"
+fi
+
+exec /usr/bin/git "$@"

@@ -56,6 +56,12 @@ if [[ $# -eq 0 ]] || [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+# Get the directory where this script lives
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+# Ensure sandbox bin scripts are executable
+chmod -R +x "$SCRIPT_DIR/bin" 2>/dev/null || true
+
 if [[ "${1:-}" == "--print" ]]; then
   PRINT_ONLY=true
   shift
@@ -137,6 +143,8 @@ BWRAP_ARGS=(
   --die-with-parent
   --share-net
   --setenv IN_SANDBOX 1
+  --setenv AGENT 1
+  --setenv PATH "$SCRIPT_DIR/bin:$PATH"
 
   # Step 1: Read-only root filesystem
   --ro-bind / /
@@ -155,8 +163,10 @@ WRITABLE_PATHS=(
   "$HOME/.codex"
   # Build tools
   "$HOME/.bun"
+  "$HOME/.cache"
   # Development
   "$HOME/code/experiments"
+  "$HOME/code/worktrees"
 )
 
 # Convert to associative array for O(1) lookup
@@ -192,12 +202,16 @@ BWRAP_ARGS+=(
 
   # Development directories
   --bind-try "$HOME/code/experiments" "$HOME/code/experiments"
+  --bind-try "$HOME/code/worktrees" "$HOME/code/worktrees"
 
   # Wrangler config (for Cloudflare dev servers)
   --bind-try "$HOME/.config/.wrangler" "$HOME/.config/.wrangler"
 
   # Bun cache (for bun install)
   --bind-try "$HOME/.bun" "$HOME/.bun"
+
+  # Cache directory (uv, pip, etc.)
+  --bind-try "$HOME/.cache" "$HOME/.cache"
 
   # Docker socket (resolved from symlink)
   --bind-try "$DOCKER_SOCK" "$DOCKER_SOCK"
