@@ -77,12 +77,14 @@ Use `agent-sandbox check` in hooks/scripts to detect if running inside the sandb
 
 ```bash
 #!/bin/bash
-if agent-sandbox check; then
+if agent-sandbox check -q; then
   echo "In sandbox - apply guardrails"
   exit 1
 fi
 # Normal operation outside sandbox
 ```
+
+Without `-q`, it prints "inside sandbox" or "outside sandbox".
 
 This cannot be bypassed by unsetting environment variables. Here's how it works:
 

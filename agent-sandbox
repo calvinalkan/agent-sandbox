@@ -22,7 +22,7 @@ show_help() {
 Usage: agent-sandbox <command> [args...]
 
 Commands:
-  check     - exit 0 if inside sandbox, exit 1 if not (for hooks/scripts)
+  check [-q] - exit 0 if inside sandbox, exit 1 if not (-q for quiet)
 
 Agents (with special flags):
   claude    - runs with --permission-mode acceptEdits
@@ -61,7 +61,15 @@ fi
 
 # Check if running inside sandbox (for use in hooks/scripts)
 if [[ "${1:-}" == "check" ]]; then
-  [[ -e /tmp/.agent-sandbox/marker ]] && exit 0 || exit 1
+  quiet=false
+  [[ "${2:-}" == "-q" ]] && quiet=true
+  if [[ -e /tmp/.agent-sandbox/marker ]]; then
+    $quiet || echo "inside sandbox"
+    exit 0
+  else
+    $quiet || echo "outside sandbox"
+    exit 1
+  fi
 fi
 
 # Get the directory where this script lives
