@@ -21,6 +21,9 @@ show_help() {
   cat <<HELP
 Usage: agent-sandbox <command> [args...]
 
+Commands:
+  check     - exit 0 if inside sandbox, exit 1 if not (for hooks/scripts)
+
 Agents (with special flags):
   claude    - runs with --permission-mode acceptEdits
   pi        - runs as-is
@@ -54,6 +57,11 @@ HELP
 if [[ $# -eq 0 ]] || [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
   show_help
   exit 0
+fi
+
+# Check if running inside sandbox (for use in hooks/scripts)
+if [[ "${1:-}" == "check" ]]; then
+  [[ -e /tmp/.agent-sandbox/marker ]] && exit 0 || exit 1
 fi
 
 # Get the directory where this script lives
@@ -142,8 +150,6 @@ fi
 BWRAP_ARGS=(
   --die-with-parent
   --share-net
-  --setenv IN_SANDBOX 1
-  --setenv AGENT 1
   --setenv PATH "$SCRIPT_DIR/bin:$PATH"
 
   # Step 1: Read-only root filesystem
@@ -227,6 +233,13 @@ BWRAP_ARGS+=(
   # Required virtual filesystems
   --dev /dev
   --proc /proc
+
+  # Sandbox marker - robust sandbox detection for hooks/scripts.
+  # Check with: [[ -e /tmp/.agent-sandbox/marker ]]
+  # Cannot be bypassed by unsetting environment variables.
+  # The tmpfs contents don't persist; directory may remain but marker won't.
+  --tmpfs /tmp/.agent-sandbox
+  --ro-bind /dev/null /tmp/.agent-sandbox/marker
 )
 
 
@@ -270,11 +283,32 @@ while IFS= read -r -d '' config_file; do
   BWRAP_ARGS+=(--ro-bind-try "$config_file" "$config_file")
 done < <(find "$PWD" -type f \( "${FIND_ARGS[@]}" \) -print0 2>/dev/null)
 
-# Protect backpressure directory (agent rules/config) in project root
-if [[ -d "$PWD/backpressure" ]]; then
-  while IFS= read -r -d '' bp_file; do
-    BWRAP_ARGS+=(--ro-bind-try "$bp_file" "$bp_file")
-  done < <(find "$PWD/backpressure" -type f -print0 2>/dev/null)
+# Project-specific read-only paths from config file
+# Supports both .json and .jsonc (with // and /* */ comments)
+CONFIG_FILE=""
+for ext in jsonc json; do
+  if [[ -f "$PWD/.agent-sandbox.$ext" ]]; then
+    CONFIG_FILE="$PWD/.agent-sandbox.$ext"
+    break
+  fi
+done
+
+# Protect both config file variants (even if not used)
+BWRAP_ARGS+=(--ro-bind-try "$PWD/.agent-sandbox.json" "$PWD/.agent-sandbox.json")
+BWRAP_ARGS+=(--ro-bind-try "$PWD/.agent-sandbox.jsonc" "$PWD/.agent-sandbox.jsonc")
+
+if [[ -n "$CONFIG_FILE" ]]; then
+  
+  # Strip JSONC comments (// and /* */) before parsing with jq
+  # Uses sed to remove single-line // comments and multi-line /* */ comments
+  strip_jsonc_comments() {
+    sed -e 's|//.*$||' -e ':a' -e 's|/\*.*\*/||' -e 'ta' "$1"
+  }
+  
+  # Mount each path from readonly array
+  while IFS= read -r path; do
+    [[ -n "$path" ]] && BWRAP_ARGS+=(--ro-bind-try "$PWD/$path" "$PWD/$path")
+  done < <(strip_jsonc_comments "$CONFIG_FILE" | jq -r '.readonly[]?' 2>/dev/null)
 fi
 
 # Protect .git/hooks and .git/config (only if .git is a directory, not a worktree file)

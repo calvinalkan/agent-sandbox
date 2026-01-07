@@ -14,7 +14,7 @@ Filesystem-protected wrapper for coding agents using [bwrap](https://github.com/
 | `/tmp` | Writable |
 | `.git/hooks`, `.git/config` | Read-only (protected) |
 | Linting/formatting configs | Read-only (protected) |
-| `backpressure/` directory | Read-only (protected) |
+| Paths in `.agent-sandbox.json` | Read-only (protected) |
 | Network | Full access (localhost, internet) |
 | Docker | Available |
 
@@ -35,23 +35,30 @@ Found recursively in `$PWD`:
 | Python | `pyproject.toml`, `ruff.toml`, `.ruff.toml`, `.flake8`, `.mypy.ini`, `.pylintrc` |
 | General | `.editorconfig` |
 
-### The `backpressure/` directory
+### Project config file
 
-Place custom rules, lint scripts, or agent instructions in a `backpressure/` directory at the project root. All files inside are mounted read-only, preventing agents from modifying or deleting them.
+Create `.agent-sandbox.json` (or `.agent-sandbox.jsonc` for comments) in your project root to specify additional read-only paths:
+
+```jsonc
+{
+  // Paths to protect from agent modification
+  "readonly": [
+    "backpressure",      // agent rules directory
+    "scripts/lint.sh",   // critical scripts
+    "Makefile"
+    /* block comments work too */
+  ]
+}
+```
+
+Paths are relative to the project root. Both files and directories work—directories protect all contents recursively.
+
+The config file itself is automatically protected (read-only). If both `.jsonc` and `.json` exist, `.jsonc` takes priority.
 
 Example use cases:
-- Custom lint wrapper scripts
-- Project-specific agent rules (e.g., `rules.md`)
-- Pre-commit hooks or validation scripts
-
-```
-myproject/
-├── backpressure/
-│   ├── rules.md          # "Never disable strict mode"
-│   └── lint.sh           # Custom lint script
-├── src/
-└── ...
-```
+- `backpressure/` directory with custom lint scripts or agent rules
+- Critical scripts that shouldn't be modified
+- Makefiles or build configs
 
 ## How it works
 
@@ -63,6 +70,83 @@ The sandbox uses bwrap mount overlays in a specific order:
 4. `--bind-try <paths>` — Specific paths made writable (agent configs, `$PWD`, etc.)
 
 This design allows agents to create temp files for atomic writes (e.g. `.claude.json.tmp.xxx`) while protecting existing home directory content from modification.
+
+## Sandbox detection
+
+Use `agent-sandbox check` in hooks/scripts to detect if running inside the sandbox:
+
+```bash
+#!/bin/bash
+if agent-sandbox check; then
+  echo "In sandbox - apply guardrails"
+  exit 1
+fi
+# Normal operation outside sandbox
+```
+
+This cannot be bypassed by unsetting environment variables. Here's how it works:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      agent-sandbox startup                          │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  bwrap creates:                                                     │
+│    1. --tmpfs /tmp/.agent-sandbox        (fresh empty tmpfs)        │
+│    2. --ro-bind /dev/null .../marker     (read-only marker file)    │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Agent runs inside sandbox                       │
+│                                                                     │
+│   /tmp/.agent-sandbox/marker exists ✓                               │
+│   - Cannot delete (ro-bind = "device busy")                         │
+│   - Cannot fake (tmpfs overlays any outside files)                  │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      agent-sandbox check                            │
+│                                                                     │
+│   [[ -e /tmp/.agent-sandbox/marker ]] → exit 0 (success)            │
+└─────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Outside sandbox                              │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│   /tmp/.agent-sandbox/marker does NOT exist                         │
+│   - tmpfs contents gone when sandbox exits                          │
+│   - Empty directory may remain, but marker is gone                  │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      agent-sandbox check                            │
+│                                                                     │
+│   [[ -e /tmp/.agent-sandbox/marker ]] → exit 1 (failure)            │
+└─────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+
+WHY IT CAN'T BE BYPASSED:
+
+  Agent tries:              Result:
+  ─────────────────────────────────────────────────────────
+  unset IN_SANDBOX          Doesn't matter - we check file
+  rm marker                 "Device busy" (ro-bind mount)
+  Create fake outside       tmpfs overlays it inside sandbox
+```
 
 ## Usage
 
