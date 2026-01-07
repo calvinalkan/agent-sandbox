@@ -5,19 +5,21 @@ blocked() {
   echo "sandbox: blocked '$1'" >&2
   echo "This is a protected operation. Do NOT attempt workarounds." >&2
   echo "If essential, ask the operator to run this command outside the sandbox." >&2
+  if [[ -n "$2" ]]; then
+    echo "" >&2
+    echo "=== CRITICAL WARNING ===" >&2
+    echo "$2" >&2
+    echo "========================" >&2
+  fi
   exit 1
 }
 
 case "$1" in
   checkout)
-    # Block: git checkout -- <file>
-    # Block: git checkout <tree-ish> -- <file>
-    # Allow: git checkout <branch>
-    for arg in "$@"; do
-      if [[ "$arg" == "--" ]]; then
-        blocked "git checkout -- <pathspec>"
-      fi
-    done
+    # Block entirely - use 'git switch' for branches instead
+    blocked "git checkout" "GIT CHECKOUT IS FORBIDDEN and will cause lost work!
+Do NOT modify untracked files or changes you did not make, EVER.
+Use 'git switch <branch>' to switch branches instead."
     ;;
   restore)
     # Block all git restore (it only restores files, no other use)
@@ -47,6 +49,13 @@ esac
 
 # Auto-skip GPG signing for commits (agents can't sign)
 if [[ "$1" == "commit" ]]; then
+  # Block --no-verify/-n (skips pre-commit hooks)
+  for arg in "$@"; do
+    if [[ "$arg" == "--no-verify" || "$arg" == "-n" ]]; then
+      blocked "git commit --no-verify" "Skipping pre-commit hooks is forbidden.
+Fix the issues that the hooks are catching instead of bypassing them."
+    fi
+  done
   exec /usr/bin/git commit --no-gpg-sign "${@:2}"
 fi
 
