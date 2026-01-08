@@ -1,0 +1,9 @@
+# Build output
+/agent-sandbox
+
+# Test binaries
+*.test
+
+.tickets/.cache
+
+.tickets/.locks/

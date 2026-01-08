@@ -1,0 +1,200 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    # - cyclop
+    - decorder
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - embeddedstructfieldcheck
+    - err113
+    - errcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - forbidigo
+    - forcetypeassert
+    - funcorder
+    # - funlen
+    - gocheckcompilerdirectives
+    # - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    # - gocognit
+    - goconst
+    - gocritic
+    # - gocyclo
+    - godoclint
+    - godot
+    - godox
+    # - gomoddirectives
+    - gomodguard
+    - goprintffuncname
+    - gosec
+    - gosmopolitan
+    - govet
+    - grouper
+    - iface
+    - importas
+    - inamedparam
+    - ineffassign
+    - interfacebloat
+    - intrange
+    - iotamixing
+    - ireturn
+    # - lll
+    - loggercheck
+    # - maintidx
+    - makezero
+    - mirror
+    - misspell
+    # - mnd
+    - musttag
+    - nakedret
+    # - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - nlreturn
+    # - noctx
+    - noinlineerr
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - paralleltest
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - staticcheck
+    - tagalign
+    # - tagliatelle
+    - testableexamples
+    - testifylint
+    - testpackage
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unqueryvet
+    - unused
+    - usestdlibvars
+    - usetesting
+    - varnamelen
+    - wastedassign
+    - whitespace
+    - wrapcheck
+    - wsl_v5
+    - zerologlint
+  settings:
+    cyclop:
+      max-complexity: 15
+    gocyclo:
+      min-complexity: 15
+    gocognit:
+      min-complexity: 20
+    funlen:
+      lines: 80
+      statements: 50
+    lll:
+      line-length: 120
+    nestif:
+      min-complexity: 5
+    nakedret:
+      max-func-lines: 0
+    varnamelen:
+      min-name-length: 2
+      ignore-names:
+        - i
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - experimental
+        - opinionated
+      disabled-checks:
+        - paramTypeCombine
+        - unnamedResult
+    gosec:
+      excludes:
+        - G304 # file inclusion via variable - we use paths from ReadDir
+    forbidigo:
+      forbid:
+        - pattern: '^time\.Sleep$'
+          msg: "time.Sleep is flaky in tests (use testing/synctest) and usually wrong in production (use tickers, timers, or context)."
+        - pattern: '^os\.Getenv$'
+          msg: "os.Getenv bypasses env abstraction - use the env map passed to Run() instead."
+        - pattern: '^os\.LookupEnv$'
+          msg: "os.LookupEnv bypasses env abstraction - use the env map passed to Run() instead."
+        - pattern: '^os\.ExpandEnv$'
+          msg: "os.ExpandEnv bypasses env abstraction - use the env map passed to Run() instead."
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - dupl
+          - varnamelen
+      # Allow time.Sleep in tests
+      - path: _test\.go
+        text: "time\\.Sleep"
+        linters:
+          - forbidigo
+      # Allow env access in tests
+      - path: _test\.go
+        text: "os\\.(Getenv|LookupEnv|ExpandEnv)"
+        linters:
+          - forbidigo
+      - path: _test\.go
+        text: "G204:" # subprocess launched with variable
+        linters:
+          - gosec
+      - path: _test\.go
+        text: "G302:" # directory permissions for test cleanup
+        linters:
+          - gosec
+      - path: _test\.go
+        text: "G306:" # file permissions > 0600
+        linters:
+          - gosec
+      - path: main\.go
+        text: "G204:"
+        linters:
+          - gosec
+      - path: sandbox\.go
+        text: "G204:" # sandbox executes bwrap by design
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - agent-sandbox
