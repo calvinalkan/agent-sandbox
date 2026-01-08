@@ -7,3 +7,5 @@
 .tickets/.cache
 
 .tickets/.locks/
+
+.wt/
