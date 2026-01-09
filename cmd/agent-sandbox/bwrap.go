@@ -15,6 +15,14 @@ const DockerSocketPath = "/var/run/docker.sock"
 // /usr/bin would require the file to already exist (root is mounted read-only).
 const SandboxBinaryPath = "/run/agent-sandbox"
 
+// SandboxMarkerPath is a marker file mounted inside the sandbox for detection.
+// The check command uses this to determine if it's running inside a sandbox.
+// We use /run/.sandbox-marker because:
+// - /run is mounted as tmpfs in the sandbox (so bwrap can create the mountpoint)
+// - Users cannot create this path on the host (requires root to write to /run)
+// - The marker is bind-mounted from /dev/null (always exists, no temp file needed).
+const SandboxMarkerPath = "/run/.sandbox-marker"
+
 // ErrDockerSocketNotFound is returned when docker is enabled but the socket cannot be found.
 var ErrDockerSocketNotFound = errors.New("docker socket not found")
 
@@ -29,9 +37,10 @@ var ErrSelfBinaryNotFound = errors.New("cannot locate agent-sandbox binary")
 //  3. Base root filesystem mount (--ro-bind / /)
 //  4. Isolated runtime tmpfs for /run
 //  5. Docker socket handling (mask or expose)
-//  6. Self binary mount (agent-sandbox at /usr/bin/agent-sandbox)
-//  7. Individual path mounts, sorted by depth (shallower first)
-//  8. Working directory (--chdir)
+//  6. Self binary mount (agent-sandbox at /run/agent-sandbox)
+//  7. Marker file for sandbox detection (at /run/agent-sandbox/.marker)
+//  8. Individual path mounts, sorted by depth (shallower first)
+//  9. Working directory (--chdir)
 //
 // Returns an error if docker is enabled but the socket cannot be found or resolved,
 // or if the agent-sandbox binary cannot be located.
@@ -77,6 +86,11 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config) ([]string, error) {
 	}
 
 	args = append(args, selfArgs...)
+
+	// Mount marker file for sandbox detection (used by "check" command)
+	// /dev/null always exists, so no temp file is needed.
+	// The marker is read-only so it cannot be removed from inside the sandbox.
+	args = append(args, "--ro-bind", "/dev/null", SandboxMarkerPath)
 
 	// Process paths in order - ResolveAndSort ensures correct depth ordering
 	// More specific paths come AFTER less specific, so they overlay correctly

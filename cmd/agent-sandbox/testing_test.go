@@ -194,36 +194,48 @@ type CLI struct {
 }
 
 // NewCLITester creates a new test CLI with a temp directory.
-// The environment is pre-seeded with HOME (pointing to Dir) and PATH
-// so that sandboxed commands can run without manual env setup.
+// The environment is pre-seeded with HOME, PATH, and TMPDIR.
+// TMPDIR points to a separate writable directory because HOME==WorkDir
+// ends up read-only due to specificity rules (ro wins over rw).
 func NewCLITester(t *testing.T) *CLI {
 	t.Helper()
 
 	dir := t.TempDir()
+	tmpDir := t.TempDir() // Separate dir for TMPDIR (always writable in sandbox)
 
 	return &CLI{
 		t:   t,
 		Dir: dir,
 		Env: map[string]string{
-			"HOME": dir,
-			"PATH": os.Getenv("PATH"),
+			"HOME":   dir,
+			"PATH":   os.Getenv("PATH"),
+			"TMPDIR": tmpDir,
 		},
 	}
 }
 
 // NewCLITesterAt creates a CLI tester that runs from a specific directory.
-// The environment is pre-seeded with HOME (pointing to dir) and PATH.
+// The environment is pre-seeded with HOME, PATH, and TMPDIR.
 func NewCLITesterAt(t *testing.T, dir string) *CLI {
 	t.Helper()
+
+	tmpDir := t.TempDir()
 
 	return &CLI{
 		t:   t,
 		Dir: dir,
 		Env: map[string]string{
-			"HOME": dir,
-			"PATH": os.Getenv("PATH"),
+			"HOME":   dir,
+			"PATH":   os.Getenv("PATH"),
+			"TMPDIR": tmpDir,
 		},
 	}
+}
+
+// TempFile returns a unique temp file path that is writable inside the sandbox.
+// The file does not exist yet - caller is responsible for creation.
+func (c *CLI) TempFile(name string) string {
+	return filepath.Join(c.Env["TMPDIR"], name)
 }
 
 // Run executes the CLI with the given args and returns stdout, stderr, and exit code.

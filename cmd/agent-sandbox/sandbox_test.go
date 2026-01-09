@@ -1,12 +1,31 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// waitForFile polls for the existence of a file, with timeout.
+// Used to synchronize with sandboxed scripts that signal readiness by creating a marker file.
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_, err := os.Stat(path)
+		if err == nil {
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timeout waiting for file %s", path)
+}
 
 // ============================================================================
 // E2E tests for ExecuteSandbox - environment, exit codes, I/O
@@ -280,20 +299,21 @@ func Test_Sandbox_Terminates_Gracefully_On_First_Signal(t *testing.T) {
 
 	c := NewCLITester(t)
 
-	// Create a signal channel
 	sigCh := make(chan os.Signal, 1)
+	marker := c.TempFile("ready")
 
-	// Create a script that traps SIGTERM and exits cleanly
-	c.WriteExecutable("trap_script.sh", `#!/bin/bash
+	// Create a script that signals readiness then waits
+	c.WriteExecutable("trap_script.sh", fmt.Sprintf(`#!/bin/bash
 trap 'exit 0' SIGTERM
+touch %q
 while true; do sleep 1; done
-`)
+`, marker))
 
 	// Start the script inside the sandbox
 	done := c.RunWithSignal(sigCh, "bash", "trap_script.sh")
 
-	// Give it a moment to start
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the script to signal it's ready
+	waitForFile(t, marker, 5*time.Second)
 
 	// Send interrupt signal
 	sigCh <- syscall.SIGINT
@@ -301,7 +321,6 @@ while true; do sleep 1; done
 	// Wait for exit with timeout - agent-sandbox exits with 130 on interrupt
 	select {
 	case code := <-done:
-		// Should exit with code 130 (interrupted)
 		if code != 130 {
 			t.Errorf("expected exit code 130, got %d", code)
 		}
@@ -321,17 +340,18 @@ func Test_Sandbox_Handles_Second_Signal(t *testing.T) {
 
 	c := NewCLITester(t)
 
-	// Create a signal channel with buffer for two signals
 	sigCh := make(chan os.Signal, 2)
+	marker := c.TempFile("ready")
 
-	c.WriteExecutable("test_script.sh", `#!/bin/bash
+	c.WriteExecutable("test_script.sh", fmt.Sprintf(`#!/bin/bash
+touch %q
 while true; do sleep 1; done
-`)
+`, marker))
 
 	done := c.RunWithSignal(sigCh, "bash", "test_script.sh")
 
-	// Give it a moment to start
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the script to signal it's ready
+	waitForFile(t, marker, 5*time.Second)
 
 	// Send first interrupt signal (triggers SIGTERM to bwrap)
 	sigCh <- syscall.SIGINT
@@ -364,16 +384,18 @@ func Test_Sandbox_Returns_130_When_Interrupted(t *testing.T) {
 	c := NewCLITester(t)
 
 	sigCh := make(chan os.Signal, 1)
+	marker := c.TempFile("ready")
 
-	// Create a simple long-running script
-	c.WriteExecutable("long_running.sh", `#!/bin/bash
+	// Create a simple long-running script that signals when ready
+	c.WriteExecutable("long_running.sh", fmt.Sprintf(`#!/bin/bash
+touch %q
 while true; do sleep 1; done
-`)
+`, marker))
 
 	done := c.RunWithSignal(sigCh, "bash", "long_running.sh")
 
-	// Give it a moment to start
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the script to signal it's ready
+	waitForFile(t, marker, 5*time.Second)
 
 	// Send interrupt signal
 	sigCh <- syscall.SIGINT
