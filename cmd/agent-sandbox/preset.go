@@ -93,9 +93,15 @@ var PresetRegistry = map[string]*Preset{
 		Composite:   true,
 		Resolve:     resolveLintAllPreset,
 	},
+	"@agents": {
+		Name:        "@agents",
+		Description: "AI coding agent configs writable (~/.codex, ~/.claude, ~/.claude.json, ~/.pi)",
+		Composite:   false,
+		Resolve:     resolveAgentsPreset,
+	},
 	"@all": {
 		Name:        "@all",
-		Description: "Everything: @base, @caches, @git, @lint/all",
+		Description: "Everything: @base, @caches, @agents, @git, @lint/all",
 		Composite:   true,
 		Resolve:     resolveAllPreset,
 	},
@@ -161,6 +167,26 @@ func resolveCachesPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
 			ctx.HomeDir + "/go",
 			ctx.HomeDir + "/.npm",
 			ctx.HomeDir + "/.cargo",
+		},
+	}
+}
+
+// resolveAgentsPreset returns paths for the @agents preset.
+// It makes AI coding agent config directories writable so agents
+// can store sessions, logs, and state:
+//   - ~/.codex (OpenAI Codex CLI - logs, sessions, config)
+//   - ~/.claude (Anthropic Claude Code - sessions, debug logs)
+//   - ~/.claude.json (Claude Code state file)
+//   - ~/.pi (pi-coding-agent - sessions)
+//
+// Note: @agents ignores the disabled parameter (it's a simple preset).
+func resolveAgentsPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	return PresetPaths{
+		Rw: []string{
+			ctx.HomeDir + "/.codex",
+			ctx.HomeDir + "/.claude",
+			ctx.HomeDir + "/.claude.json",
+			ctx.HomeDir + "/.pi",
 		},
 	}
 }
@@ -629,7 +655,7 @@ func resolveLintAllPreset(ctx PresetContext, disabled map[string]bool) PresetPat
 }
 
 // resolveAllPreset returns paths for the @all preset.
-// It expands @base, @caches, @git, and @lint/all, skipping any in the disabled map.
+// It expands @base, @caches, @agents, @git, and @lint/all, skipping any in the disabled map.
 //
 // This is a composite preset - it respects the disabled map to support
 // negations like "!@lint/python" or "!@caches".
@@ -643,6 +669,7 @@ func resolveAllPreset(ctx PresetContext, disabled map[string]bool) PresetPaths {
 	}{
 		{"@base", resolveBasePreset},
 		{"@caches", resolveCachesPreset},
+		{"@agents", resolveAgentsPreset},
 		{"@git", resolveGitPreset},
 		{"@lint/all", resolveLintAllPreset},
 	}

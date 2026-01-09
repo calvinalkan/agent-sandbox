@@ -247,14 +247,15 @@ Presets are built-in named configurations for filesystem access. Users cannot de
 
 | Preset | Description |
 |--------|-------------|
-| `@base` | Core sandbox: working directory writable, home protected (new files allowed, existing protected), temp writable, agent configs writable, secrets excluded (~/.ssh, ~/.gnupg, ~/.aws), sandbox config protected |
+| `@base` | Core sandbox: working directory writable, home protected (new files allowed, existing protected), temp writable, secrets excluded (~/.ssh, ~/.gnupg, ~/.aws), sandbox config protected |
 | `@caches` | Build tool caches writable (~/.cache, ~/.bun, ~/go, ~/.npm, ~/.cargo) |
+| `@agents` | AI coding agent configs writable (~/.codex, ~/.claude, ~/.claude.json, ~/.pi) |
 | `@git` | Git hooks and config protected (.git/hooks, .git/config), with automatic worktree support |
 | `@lint/ts` | TypeScript/JavaScript lint configs protected (biome, eslint, prettier, tsconfig) |
 | `@lint/go` | Go lint configs protected (golangci) |
 | `@lint/python` | Python lint configs protected (ruff, flake8, mypy, pylint, pyproject.toml) |
 | `@lint/all` | All lint presets combined |
-| `@all` | Everything: @base, @caches, @git, @lint/all |
+| `@all` | Everything: @base, @caches, @agents, @git, @lint/all |
 
 ---
 

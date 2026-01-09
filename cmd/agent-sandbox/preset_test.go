@@ -21,6 +21,7 @@ func Test_PresetRegistry_Contains_All_Expected_Presets(t *testing.T) {
 	expectedPresets := []string{
 		"@base",
 		"@caches",
+		"@agents",
 		"@git",
 		"@git-strict",
 		"@lint/ts",
@@ -639,6 +640,150 @@ func Test_CachesPreset_Works_With_Different_Home_Dir(t *testing.T) {
 
 	if !sliceContains(paths.Rw, "/users/alice/go") {
 		t.Errorf("@caches should use correct home dir for go, got: %v", paths.Rw)
+	}
+}
+
+// ============================================================================
+// @agents preset tests
+// ============================================================================
+
+func Test_AgentsPreset_Returns_Codex_Dir_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAgentsPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.codex") {
+		t.Errorf("@agents should include ~/.codex in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_AgentsPreset_Returns_Claude_Dir_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAgentsPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.claude") {
+		t.Errorf("@agents should include ~/.claude in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_AgentsPreset_Returns_Claude_Json_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAgentsPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.claude.json") {
+		t.Errorf("@agents should include ~/.claude.json in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_AgentsPreset_Returns_Pi_Dir_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAgentsPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.pi") {
+		t.Errorf("@agents should include ~/.pi in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_AgentsPreset_Returns_All_Agent_Directories(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/testuser",
+		WorkDir: "/home/testuser/myproject",
+	}
+
+	paths := resolveAgentsPreset(ctx, nil)
+
+	expectedRw := []string{
+		"/home/testuser/.codex",
+		"/home/testuser/.claude",
+		"/home/testuser/.claude.json",
+		"/home/testuser/.pi",
+	}
+
+	if len(paths.Rw) != len(expectedRw) {
+		t.Errorf("@agents should have exactly %d rw paths, got %d: %v",
+			len(expectedRw), len(paths.Rw), paths.Rw)
+	}
+
+	for _, expected := range expectedRw {
+		if !sliceContains(paths.Rw, expected) {
+			t.Errorf("@agents should include %q in rw paths, got: %v", expected, paths.Rw)
+		}
+	}
+}
+
+func Test_AgentsPreset_Returns_No_ReadOnly_Paths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAgentsPreset(ctx, nil)
+
+	if len(paths.Ro) != 0 {
+		t.Errorf("@agents should not return any ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_AgentsPreset_Returns_No_Excluded_Paths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAgentsPreset(ctx, nil)
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@agents should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_AgentsPreset_Ignores_Disabled_Map(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// @agents is a simple preset, so disabled should have no effect
+	disabled := map[string]bool{
+		"@agents": true,
+	}
+
+	paths := resolveAgentsPreset(ctx, disabled)
+
+	// Should still return all paths
+	if len(paths.Rw) == 0 {
+		t.Error("@agents should return rw paths even with disabled map")
 	}
 }
 
