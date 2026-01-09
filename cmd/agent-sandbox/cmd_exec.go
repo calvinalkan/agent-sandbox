@@ -25,6 +25,10 @@ var (
 	ErrBwrapNotFound = errors.New("bwrap not found in PATH (try installing with: sudo apt install bubblewrap)")
 	// ErrInvalidCmdFlag is returned when a --cmd flag value is malformed.
 	ErrInvalidCmdFlag = errors.New("invalid --cmd format: expected KEY=VALUE")
+	// ErrHomeNotFound is returned when the home directory cannot be determined.
+	ErrHomeNotFound = errors.New("cannot determine home directory")
+	// ErrHomeNotDir is returned when HOME points to a file instead of a directory.
+	ErrHomeNotDir = errors.New("home directory is not a directory")
 )
 
 // ExecCmd creates the exec command for running commands in the sandbox.
@@ -41,8 +45,6 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 	flags.StringArray("exclude", nil, "Add excluded path")
 	flags.StringArray("cmd", nil, "Command wrapper override (KEY=VALUE, repeatable)")
 
-	_ = env // Will be used when implementing sandbox
-
 	return &Command{
 		Flags:   flags,
 		Usage:   "exec [flags] <command> [args]",
@@ -51,6 +53,13 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 		Aliases: []string{},
 		Exec: func(_ context.Context, _ io.Reader, _, stderr io.Writer, args []string) error {
 			err := checkPlatformPrerequisites()
+			if err != nil {
+				return err
+			}
+
+			// Validate home directory early (before any path resolution)
+			// This is required because @base and many presets reference home paths
+			_, err = GetHomeDir(env)
 			if err != nil {
 				return err
 			}
@@ -180,4 +189,40 @@ func checkPlatformPrerequisites() error {
 	}
 
 	return nil
+}
+
+// GetHomeDir returns the home directory, validating that it exists and is a directory.
+// It first checks the env map (respects container overrides), then falls back to os.UserHomeDir().
+func GetHomeDir(env map[string]string) (string, error) {
+	// Try env first (respect container overrides)
+	if home := env["HOME"]; home != "" {
+		info, err := os.Stat(home)
+		if err != nil {
+			return "", fmt.Errorf("%w: %s (from $HOME) does not exist: %w", ErrHomeNotFound, home, err)
+		}
+
+		if !info.IsDir() {
+			return "", fmt.Errorf("%w: %s (from $HOME)", ErrHomeNotDir, home)
+		}
+
+		return home, nil
+	}
+
+	// Fall back to os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("%w: %w (set $HOME environment variable)", ErrHomeNotFound, err)
+	}
+
+	// Verify the fallback home exists and is a directory
+	info, err := os.Stat(home)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s does not exist: %w", ErrHomeNotFound, home, err)
+	}
+
+	if !info.IsDir() {
+		return "", fmt.Errorf("%w: %s", ErrHomeNotDir, home)
+	}
+
+	return home, nil
 }

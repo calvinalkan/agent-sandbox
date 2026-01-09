@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	flag "github.com/spf13/pflag"
@@ -418,4 +419,152 @@ func Test_Help_Works_With_Missing_Explicit_Config(t *testing.T) {
 	}
 
 	AssertContains(t, stdout, "agent-sandbox")
+}
+
+// ============================================================================
+// GetHomeDir tests
+// ============================================================================
+
+func Test_GetHomeDir_Returns_Home_When_Valid_Env_Set(t *testing.T) {
+	t.Parallel()
+
+	// Use temp dir as a valid home directory
+	tmpDir := t.TempDir()
+	env := map[string]string{"HOME": tmpDir}
+
+	home, err := GetHomeDir(env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if home != tmpDir {
+		t.Errorf("expected home %q, got %q", tmpDir, home)
+	}
+}
+
+func Test_GetHomeDir_Returns_Error_When_Home_Does_Not_Exist(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{"HOME": "/nonexistent/path/that/does/not/exist"}
+
+	_, err := GetHomeDir(env)
+	if err == nil {
+		t.Fatal("expected error for nonexistent home directory")
+	}
+
+	AssertContains(t, err.Error(), "cannot determine home directory")
+	AssertContains(t, err.Error(), "/nonexistent/path/that/does/not/exist")
+	AssertContains(t, err.Error(), "does not exist")
+}
+
+func Test_GetHomeDir_Returns_Error_When_Home_Is_File(t *testing.T) {
+	t.Parallel()
+
+	// Create a file instead of a directory
+	tmpDir := t.TempDir()
+	filePath := tmpDir + "/not-a-dir"
+
+	err := os.WriteFile(filePath, []byte("test"), 0o644)
+	if err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	env := map[string]string{"HOME": filePath}
+
+	_, err = GetHomeDir(env)
+	if err == nil {
+		t.Fatal("expected error when HOME points to a file")
+	}
+
+	AssertContains(t, err.Error(), "is not a directory")
+	AssertContains(t, err.Error(), filePath)
+}
+
+func Test_GetHomeDir_Falls_Back_To_UserHomeDir_When_Env_Empty(t *testing.T) {
+	t.Parallel()
+
+	// Empty env map - should fall back to os.UserHomeDir()
+	env := map[string]string{}
+
+	home, err := GetHomeDir(env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Result should be a valid directory
+	info, err := os.Stat(home)
+	if err != nil {
+		t.Fatalf("returned home %q does not exist: %v", home, err)
+	}
+
+	if !info.IsDir() {
+		t.Errorf("returned home %q is not a directory", home)
+	}
+}
+
+func Test_GetHomeDir_Error_Suggests_Setting_HOME(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{"HOME": "/nonexistent/path"}
+
+	_, err := GetHomeDir(env)
+	if err == nil {
+		t.Fatal("expected error for nonexistent home directory")
+	}
+
+	// Error message should be actionable
+	AssertContains(t, err.Error(), "HOME")
+}
+
+// ============================================================================
+// Exec command home directory validation tests
+// ============================================================================
+
+func Test_Exec_Returns_Error_When_Home_Directory_Does_Not_Exist(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+	c.Env["HOME"] = "/nonexistent/path/that/does/not/exist"
+
+	_, stderr, code := c.Run("exec", "echo", "hello")
+
+	if code == 0 {
+		t.Errorf("expected non-zero exit code for nonexistent home")
+	}
+
+	AssertContains(t, stderr, "cannot determine home directory")
+}
+
+func Test_Exec_Returns_Error_When_Home_Is_File(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Create a file where HOME points to
+	filePath := c.Dir + "/not-a-dir"
+	c.WriteFile("not-a-dir", "test content")
+	c.Env["HOME"] = filePath
+
+	_, stderr, code := c.Run("exec", "echo", "hello")
+
+	if code == 0 {
+		t.Errorf("expected non-zero exit code when HOME is a file")
+	}
+
+	AssertContains(t, stderr, "is not a directory")
+}
+
+func Test_Exec_Succeeds_When_Home_Is_Valid(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+	// Use the temp dir as HOME (it's valid)
+	c.Env["HOME"] = c.Dir
+
+	_, stderr, code := c.Run("exec", "echo", "hello")
+
+	// Should succeed (exec prints "not yet implemented" but exit 0)
+	if code != 0 {
+		t.Errorf("expected exit code 0 for valid home, got %d\nstderr: %s", code, stderr)
+	}
 }

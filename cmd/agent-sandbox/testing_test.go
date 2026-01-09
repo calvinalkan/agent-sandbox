@@ -445,16 +445,13 @@ func cleanGitEnv() []string {
 
 // run executes a git command in the repository directory.
 // Skips the test if git is not available, fails on other errors.
+// Clears git environment variables to prevent interference from pre-commit hooks.
 func (r *GitRepo) run(args ...string) {
 	r.t.Helper()
 
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.Dir
 	cmd.Env = cleanGitEnv()
-
-	// Clear GIT_* environment variables to prevent interference from parent repo
-	// when running tests inside a git worktree (common in development).
-	cmd.Env = filterGitEnv(os.Environ())
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -466,22 +463,4 @@ func (r *GitRepo) run(args ...string) {
 
 		r.t.Fatalf("git %v failed: %v\noutput: %s", args, err, output)
 	}
-}
-
-// filterGitEnv returns env with GIT_DIR, GIT_WORK_TREE, and GIT_INDEX_FILE removed.
-// This prevents test git commands from inheriting parent repo state.
-func filterGitEnv(env []string) []string {
-	result := make([]string, 0, len(env))
-
-	for _, e := range env {
-		if strings.HasPrefix(e, "GIT_DIR=") ||
-			strings.HasPrefix(e, "GIT_WORK_TREE=") ||
-			strings.HasPrefix(e, "GIT_INDEX_FILE=") {
-			continue
-		}
-
-		result = append(result, e)
-	}
-
-	return result
 }
