@@ -4,12 +4,24 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"runtime"
 
 	flag "github.com/spf13/pflag"
 )
 
-// ErrNoCommand is returned when exec is called without a command.
-var ErrNoCommand = errors.New("no command specified")
+// Static errors for platform prerequisites.
+var (
+	// ErrNoCommand is returned when exec is called without a command.
+	ErrNoCommand = errors.New("no command specified")
+	// ErrNotLinux is returned when running on a non-Linux platform.
+	ErrNotLinux = errors.New("agent-sandbox requires Linux")
+	// ErrRunningAsRoot is returned when running as root user.
+	ErrRunningAsRoot = errors.New("agent-sandbox cannot run as root")
+	// ErrBwrapNotFound is returned when bwrap is not in PATH.
+	ErrBwrapNotFound = errors.New("bwrap not found in PATH (try installing with: sudo apt install bubblewrap)")
+)
 
 // ExecCmd creates the exec command for running commands in the sandbox.
 func ExecCmd(cfg *Config, env map[string]string) *Command {
@@ -34,6 +46,10 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 		Long:    "Run a command inside the bubblewrap sandbox with configured filesystem access.",
 		Aliases: []string{},
 		Exec: func(_ context.Context, _ io.Reader, _, stderr io.Writer, args []string) error {
+			if err := checkPlatformPrerequisites(); err != nil {
+				return err
+			}
+
 			if len(args) == 0 {
 				return ErrNoCommand
 			}
@@ -43,4 +59,22 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 			return nil
 		},
 	}
+}
+
+// checkPlatformPrerequisites validates the runtime environment.
+func checkPlatformPrerequisites() error {
+	if runtime.GOOS != "linux" {
+		return ErrNotLinux
+	}
+
+	if os.Getuid() == 0 {
+		return ErrRunningAsRoot
+	}
+
+	_, err := exec.LookPath("bwrap")
+	if err != nil {
+		return ErrBwrapNotFound
+	}
+
+	return nil
 }
