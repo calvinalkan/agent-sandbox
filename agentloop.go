@@ -116,9 +116,10 @@ func cmdStart(args []string) {
 		os.Exit(1)
 	}
 
-	// Warn if git working directory is not clean
+	// Refuse to start if git working directory is not clean
 	if !isGitClean() {
-		fmt.Fprintln(os.Stderr, "warning: git working directory is not clean (uncommitted changes won't be in worktrees)")
+		fmt.Fprintln(os.Stderr, "error: git working directory is not clean (uncommitted changes won't be in worktrees)")
+		os.Exit(1)
 	}
 
 	// Check if already running
@@ -317,9 +318,10 @@ func cmdRun(args []string) {
 		os.Exit(1)
 	}
 
-	// Warn if git working directory is not clean
+	// Refuse to run if git working directory is not clean
 	if !isGitClean() {
-		fmt.Fprintln(os.Stderr, "warning: git working directory is not clean (uncommitted changes won't be in worktrees)")
+		fmt.Fprintln(os.Stderr, "error: git working directory is not clean (uncommitted changes won't be in worktrees)")
+		os.Exit(1)
 	}
 
 	agentRunner = *runner
@@ -481,6 +483,16 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 
 		// Don't start new agents if draining
 		if draining || running >= maxAgents {
+			time.Sleep(backoff)
+			backoff = min(backoff*2, maxBackoff)
+			continue
+		}
+
+		// Don't start new agents if git is dirty
+		if !isGitClean() {
+			if running == 0 {
+				log.Printf("git working directory is dirty, waiting...")
+			}
 			time.Sleep(backoff)
 			backoff = min(backoff*2, maxBackoff)
 			continue
