@@ -892,3 +892,266 @@ func Test_selfBinaryArgs_Resolves_Binary_Path(t *testing.T) {
 		t.Errorf("binary path %s should exist: %v", binaryPath, err)
 	}
 }
+
+// ============================================================================
+// SetupTempDir Tests
+// ============================================================================
+
+func Test_SetupTempDir_Creates_Directory(t *testing.T) {
+	t.Parallel()
+
+	res, err := SetupTempDir()
+	if err != nil {
+		t.Fatalf("SetupTempDir() returned error: %v", err)
+	}
+
+	defer res.Cleanup()
+
+	// Verify directory exists
+	info, err := os.Stat(res.Dir)
+	if err != nil {
+		t.Fatalf("temp dir %q does not exist: %v", res.Dir, err)
+	}
+
+	if !info.IsDir() {
+		t.Errorf("expected %q to be a directory", res.Dir)
+	}
+}
+
+func Test_SetupTempDir_Creates_Empty_File_With_Mode_000(t *testing.T) {
+	t.Parallel()
+
+	res, err := SetupTempDir()
+	if err != nil {
+		t.Fatalf("SetupTempDir() returned error: %v", err)
+	}
+
+	defer res.Cleanup()
+
+	// Verify empty file exists
+	info, err := os.Stat(res.EmptyFile)
+	if err != nil {
+		t.Fatalf("empty file %q does not exist: %v", res.EmptyFile, err)
+	}
+
+	// Verify it's a regular file
+	if info.IsDir() {
+		t.Errorf("expected %q to be a file, not a directory", res.EmptyFile)
+	}
+
+	// Verify size is 0
+	if info.Size() != 0 {
+		t.Errorf("expected empty file to have size 0, got %d", info.Size())
+	}
+
+	// Verify mode is 000 (no permissions)
+	mode := info.Mode().Perm()
+	if mode != 0o000 {
+		t.Errorf("expected file mode 000, got %o", mode)
+	}
+}
+
+func Test_SetupTempDir_EmptyFile_Path_Is_Inside_Dir(t *testing.T) {
+	t.Parallel()
+
+	res, err := SetupTempDir()
+	if err != nil {
+		t.Fatalf("SetupTempDir() returned error: %v", err)
+	}
+
+	defer res.Cleanup()
+
+	// Verify empty file is inside the temp dir
+	if !strings.HasPrefix(res.EmptyFile, res.Dir) {
+		t.Errorf("empty file %q should be inside temp dir %q", res.EmptyFile, res.Dir)
+	}
+}
+
+func Test_SetupTempDir_Cleanup_Removes_Directory(t *testing.T) {
+	t.Parallel()
+
+	res, err := SetupTempDir()
+	if err != nil {
+		t.Fatalf("SetupTempDir() returned error: %v", err)
+	}
+
+	dir := res.Dir
+	res.Cleanup()
+
+	// Verify directory no longer exists
+	_, err = os.Stat(dir)
+	if err == nil {
+		t.Errorf("directory %q should not exist after cleanup", dir)
+	}
+
+	if !os.IsNotExist(err) {
+		t.Errorf("expected os.IsNotExist error, got: %v", err)
+	}
+}
+
+// ============================================================================
+// GenerateExcludeMounts Tests
+// ============================================================================
+
+func Test_GenerateExcludeMounts_Returns_Tmpfs_For_Directories(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory to use as the exclude path
+	tmpDir := t.TempDir()
+	excludeDir := filepath.Join(tmpDir, "secret-dir")
+
+	err := os.MkdirAll(excludeDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create test directory: %v", err)
+	}
+
+	paths := []ResolvedPath{
+		{Original: "~/secret", Resolved: excludeDir, Access: PathAccessExclude, Source: PathSourcePreset},
+	}
+
+	args := GenerateExcludeMounts(paths, "/tmp/empty")
+
+	// Should contain --tmpfs for directory
+	expected := []string{bwrapTmpfs, excludeDir}
+	if !slices.Equal(args, expected) {
+		t.Errorf("expected args %v, got %v", expected, args)
+	}
+}
+
+func Test_GenerateExcludeMounts_Returns_Ro_Bind_For_Files(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp file to use as the exclude path
+	tmpDir := t.TempDir()
+	excludeFile := filepath.Join(tmpDir, "secret-file.txt")
+
+	err := os.WriteFile(excludeFile, []byte("secret"), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	emptyFile := "/tmp/agent-sandbox-test/empty-unreadable"
+
+	paths := []ResolvedPath{
+		{Original: "~/.secret", Resolved: excludeFile, Access: PathAccessExclude, Source: PathSourcePreset},
+	}
+
+	args := GenerateExcludeMounts(paths, emptyFile)
+
+	// Should contain --ro-bind for file
+	expected := []string{bwrapRoBind, emptyFile, excludeFile}
+	if !slices.Equal(args, expected) {
+		t.Errorf("expected args %v, got %v", expected, args)
+	}
+}
+
+func Test_GenerateExcludeMounts_Skips_NonExistent_Paths(t *testing.T) {
+	t.Parallel()
+
+	// Use a path that doesn't exist
+	nonExistentPath := "/nonexistent/path/that/does/not/exist"
+
+	paths := []ResolvedPath{
+		{Original: nonExistentPath, Resolved: nonExistentPath, Access: PathAccessExclude, Source: PathSourcePreset},
+	}
+
+	args := GenerateExcludeMounts(paths, "/tmp/empty")
+
+	// Should return empty args (path skipped)
+	if len(args) != 0 {
+		t.Errorf("expected empty args for non-existent path, got %v", args)
+	}
+}
+
+func Test_GenerateExcludeMounts_Skips_NonExclude_Paths(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory that exists
+	tmpDir := t.TempDir()
+
+	paths := []ResolvedPath{
+		{Original: tmpDir, Resolved: tmpDir, Access: PathAccessRo, Source: PathSourcePreset},
+		{Original: tmpDir, Resolved: tmpDir, Access: PathAccessRw, Source: PathSourceProject},
+	}
+
+	args := GenerateExcludeMounts(paths, "/tmp/empty")
+
+	// Should return empty args (non-exclude paths skipped)
+	if len(args) != 0 {
+		t.Errorf("expected empty args for non-exclude paths, got %v", args)
+	}
+}
+
+func Test_GenerateExcludeMounts_Handles_Multiple_Paths(t *testing.T) {
+	t.Parallel()
+
+	// Create temp directory and file
+	tmpDir := t.TempDir()
+	excludeDir := filepath.Join(tmpDir, "dir")
+	excludeFile := filepath.Join(tmpDir, "file.txt")
+
+	err := os.MkdirAll(excludeDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create test directory: %v", err)
+	}
+
+	err = os.WriteFile(excludeFile, []byte("secret"), 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	emptyFile := "/tmp/empty"
+
+	paths := []ResolvedPath{
+		{Original: "dir", Resolved: excludeDir, Access: PathAccessExclude, Source: PathSourcePreset},
+		{Original: "file.txt", Resolved: excludeFile, Access: PathAccessExclude, Source: PathSourcePreset},
+	}
+
+	args := GenerateExcludeMounts(paths, emptyFile)
+
+	// Should have args for both
+	if len(args) != 5 {
+		t.Fatalf("expected 5 args (--tmpfs dir, --ro-bind empty file), got %d: %v", len(args), args)
+	}
+
+	// Verify directory is tmpfs
+	if args[0] != bwrapTmpfs || args[1] != excludeDir {
+		t.Errorf("expected --tmpfs %s, got %s %s", excludeDir, args[0], args[1])
+	}
+
+	// Verify file is ro-bind
+	if args[2] != bwrapRoBind || args[3] != emptyFile || args[4] != excludeFile {
+		t.Errorf("expected --ro-bind %s %s, got %s %s %s", emptyFile, excludeFile, args[2], args[3], args[4])
+	}
+}
+
+func Test_GenerateExcludeMounts_Mixed_Paths_Only_Processes_Exclude(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	excludeDir := filepath.Join(tmpDir, "exclude")
+	roDir := filepath.Join(tmpDir, "readonly")
+
+	err := os.MkdirAll(excludeDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create exclude dir: %v", err)
+	}
+
+	err = os.MkdirAll(roDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create ro dir: %v", err)
+	}
+
+	paths := []ResolvedPath{
+		{Original: "exclude", Resolved: excludeDir, Access: PathAccessExclude, Source: PathSourcePreset},
+		{Original: "readonly", Resolved: roDir, Access: PathAccessRo, Source: PathSourcePreset},
+	}
+
+	args := GenerateExcludeMounts(paths, "/tmp/empty")
+
+	// Should only have args for exclude path
+	expected := []string{bwrapTmpfs, excludeDir}
+	if !slices.Equal(args, expected) {
+		t.Errorf("expected args %v, got %v", expected, args)
+	}
+}

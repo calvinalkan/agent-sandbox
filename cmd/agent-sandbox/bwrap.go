@@ -29,6 +29,76 @@ var ErrDockerSocketNotFound = errors.New("docker socket not found")
 // ErrSelfBinaryNotFound is returned when the agent-sandbox binary cannot be located.
 var ErrSelfBinaryNotFound = errors.New("cannot locate agent-sandbox binary")
 
+// TempDirResources holds resources created by SetupTempDir.
+// The caller must call Cleanup when done to remove the temp directory.
+type TempDirResources struct {
+	// Dir is the path to the temp directory.
+	Dir string
+	// EmptyFile is the path to the empty mode-000 file used for file exclusions.
+	EmptyFile string
+	// Cleanup removes the temp directory and all contents.
+	Cleanup func()
+}
+
+// SetupTempDir creates a temp directory for sandbox resources.
+// It creates an empty mode-000 file for file exclusions.
+//
+// The returned TempDirResources.Cleanup must be called to remove the directory.
+func SetupTempDir() (*TempDirResources, error) {
+	dir, err := os.MkdirTemp("", "agent-sandbox-")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp directory: %w", err)
+	}
+
+	// Create empty unreadable file for file exclusions
+	emptyFile := filepath.Join(dir, "empty-unreadable")
+
+	err = os.WriteFile(emptyFile, nil, 0o000)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+
+		return nil, fmt.Errorf("creating empty file: %w", err)
+	}
+
+	return &TempDirResources{
+		Dir:       dir,
+		EmptyFile: emptyFile,
+		Cleanup:   func() { _ = os.RemoveAll(dir) },
+	}, nil
+}
+
+// GenerateExcludeMounts generates bwrap arguments for exclude paths.
+//
+// For directories: --tmpfs /path (creates empty dir, contents return ENOENT)
+// For files: --ro-bind /tmp/empty-000 /path (file exists but returns EACCES)
+//
+// Non-existent paths are skipped silently (no error).
+func GenerateExcludeMounts(excludePaths []ResolvedPath, emptyFile string) []string {
+	var args []string
+
+	for _, entry := range excludePaths {
+		if entry.Access != PathAccessExclude {
+			continue
+		}
+
+		info, err := os.Stat(entry.Resolved)
+		if err != nil {
+			// Path doesn't exist, skip silently
+			continue
+		}
+
+		if info.IsDir() {
+			// Directory: use tmpfs (empty dir, contents ENOENT)
+			args = append(args, "--tmpfs", entry.Resolved)
+		} else {
+			// File: bind unreadable file (exists, EACCES on read)
+			args = append(args, "--ro-bind", emptyFile, entry.Resolved)
+		}
+	}
+
+	return args
+}
+
 // BwrapArgs generates bwrap arguments from resolved paths and configuration.
 //
 // The argument order is important - bwrap processes arguments in order, so:
