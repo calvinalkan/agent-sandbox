@@ -8,6 +8,11 @@ import (
 	"testing"
 )
 
+const (
+	testHomeUser        = "/home/user"
+	testHomeUserWorkDir = "/home/user/project"
+)
+
 // Note: exec import removed - git commands use GitRepo helper from testing_test.go
 
 func Test_PresetRegistry_Contains_All_Expected_Presets(t *testing.T) {
@@ -120,25 +125,25 @@ func Test_PresetContext_Has_All_Required_Fields(t *testing.T) {
 
 	// Verify the struct has all required fields by creating an instance
 	ctx := PresetContext{
-		HomeDir:           "/home/user",
-		WorkDir:           "/home/user/project",
-		GitWorktree:       "/home/user/project/.git/worktrees/feature",
-		LoadedConfigPaths: []string{"/home/user/.config/agent-sandbox/config.json"},
+		HomeDir:           testHomeUser,
+		WorkDir:           testHomeUserWorkDir,
+		GitWorktree:       testHomeUserWorkDir + "/.git/worktrees/feature",
+		LoadedConfigPaths: []string{testHomeUser + "/.config/agent-sandbox/config.json"},
 	}
 
-	if ctx.HomeDir != "/home/user" {
+	if ctx.HomeDir != testHomeUser {
 		t.Error("PresetContext.HomeDir field not working correctly")
 	}
 
-	if ctx.WorkDir != "/home/user/project" {
+	if ctx.WorkDir != testHomeUserWorkDir {
 		t.Error("PresetContext.WorkDir field not working correctly")
 	}
 
-	if ctx.GitWorktree != "/home/user/project/.git/worktrees/feature" {
+	if ctx.GitWorktree != testHomeUserWorkDir+"/.git/worktrees/feature" {
 		t.Error("PresetContext.GitWorktree field not working correctly")
 	}
 
-	if len(ctx.LoadedConfigPaths) != 1 || ctx.LoadedConfigPaths[0] != "/home/user/.config/agent-sandbox/config.json" {
+	if len(ctx.LoadedConfigPaths) != 1 || ctx.LoadedConfigPaths[0] != testHomeUser+"/.config/agent-sandbox/config.json" {
 		t.Error("PresetContext.LoadedConfigPaths field not working correctly")
 	}
 }
