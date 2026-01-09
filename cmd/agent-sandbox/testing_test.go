@@ -354,6 +354,95 @@ func (r *GitRepo) AddWorktree(worktreeDir, branchName string) string {
 	return worktreeDir
 }
 
+// gitEnvExcludes lists git environment variables that should be excluded
+// when running git commands in tests. These variables are inherited from
+// the parent process (e.g., pre-commit hooks) and can interfere with
+// git operations in isolated test directories.
+var gitEnvExcludes = map[string]bool{
+	"GIT_DIR":                            true,
+	"GIT_WORK_TREE":                      true,
+	"GIT_INDEX_FILE":                     true,
+	"GIT_OBJECT_DIRECTORY":               true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES":   true,
+	"GIT_CONFIG":                         true,
+	"GIT_CONFIG_GLOBAL":                  true,
+	"GIT_COMMON_DIR":                     true,
+	"GIT_CEILING_DIRECTORIES":            true,
+	"GIT_DISCOVERY_ACROSS_FILESYSTEM":    true,
+	"GIT_QUARANTINE_PATH":                true,
+	"GIT_PUSH_OPTION_COUNT":              true,
+	"GIT_AUTHOR_NAME":                    true,
+	"GIT_AUTHOR_EMAIL":                   true,
+	"GIT_AUTHOR_DATE":                    true,
+	"GIT_COMMITTER_NAME":                 true,
+	"GIT_COMMITTER_EMAIL":                true,
+	"GIT_COMMITTER_DATE":                 true,
+	"GIT_LITERAL_PATHSPECS":              true,
+	"GIT_GLOB_PATHSPECS":                 true,
+	"GIT_NOGLOB_PATHSPECS":               true,
+	"GIT_ICASE_PATHSPECS":                true,
+	"GIT_REFLOG_ACTION":                  true,
+	"GIT_SEQUENCE_EDITOR":                true,
+	"GIT_SSH":                            true,
+	"GIT_SSH_COMMAND":                    true,
+	"GIT_ASKPASS":                        true,
+	"GIT_TERMINAL_PROMPT":                true,
+	"GIT_FLUSH":                          true,
+	"GIT_TRACE":                          true,
+	"GIT_TRACE_PACK_ACCESS":              true,
+	"GIT_TRACE_PACKET":                   true,
+	"GIT_TRACE_PERFORMANCE":              true,
+	"GIT_TRACE_SETUP":                    true,
+	"GIT_TRACE_SHALLOW":                  true,
+	"GIT_TRACE_CURL":                     true,
+	"GIT_TRACE_CURL_NO_DATA":             true,
+	"GIT_TRACE2":                         true,
+	"GIT_TRACE2_EVENT":                   true,
+	"GIT_TRACE2_PERF":                    true,
+	"GIT_REDACT_COOKIES":                 true,
+	"GIT_CURL_VERBOSE":                   true,
+	"GIT_DIFF_OPTS":                      true,
+	"GIT_EXTERNAL_DIFF":                  true,
+	"GIT_DIFF_PATH_COUNTER":              true,
+	"GIT_DIFF_PATH_TOTAL":                true,
+	"GIT_MERGE_VERBOSITY":                true,
+	"GIT_PAGER":                          true,
+	"GIT_PROGRESS_DELAY":                 true,
+	"GIT_DEFAULT_HASH":                   true,
+	"GIT_ALLOW_PROTOCOL":                 true,
+	"GIT_PROTOCOL_FROM_USER":             true,
+	"GIT_OPTIONAL_LOCKS":                 true,
+	"GIT_CLONE_PROTECTION_ACTIVE":        true,
+	"GIT_EXEC_PATH":                      true,
+	"GIT_TEMPLATE_DIR":                   true,
+	"GIT_NO_REPLACE_OBJECTS":             true,
+	"GIT_REPLACE_REF_BASE":               true,
+	"GIT_PREFIX":                         true,
+	"GIT_SHALLOW_FILE":                   true,
+	"GIT_NAMESPACE":                      true,
+	"GIT_ATTR_SOURCE":                    true,
+	"GIT_INTERNAL_GETTEXT_TEST_FALLBACK": true,
+	"GIT_INTERNAL_GETTEXT_SH_SCHEME":     true,
+}
+
+// cleanGitEnv returns a copy of os.Environ() with git-related variables removed.
+func cleanGitEnv() []string {
+	var clean []string
+
+	for _, env := range os.Environ() {
+		key := env
+		if before, _, ok := strings.Cut(env, "="); ok {
+			key = before
+		}
+
+		if !gitEnvExcludes[key] {
+			clean = append(clean, env)
+		}
+	}
+
+	return clean
+}
+
 // run executes a git command in the repository directory.
 // Skips the test if git is not available, fails on other errors.
 func (r *GitRepo) run(args ...string) {
@@ -361,6 +450,7 @@ func (r *GitRepo) run(args ...string) {
 
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.Dir
+	cmd.Env = cleanGitEnv()
 
 	// Clear GIT_* environment variables to prevent interference from parent repo
 	// when running tests inside a git worktree (common in development).
