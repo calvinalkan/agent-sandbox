@@ -162,6 +162,9 @@ func Test_Sandbox_Blocks_Write_When_Path_Is_Readonly(t *testing.T)
 func Test_Preset_Expands_Correctly_When_Negated(t *testing.T)
 ```
 
+**DO NOT USE MOCKING EVER** Mocks are useless. Do not use them ever,
+do not ever add code just for the purpose of easy unit tests. ever.
+
 ---
 
 ## Debug Output

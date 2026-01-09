@@ -34,3 +34,8 @@ Use conventional commit messages, and reference the ticket in the first line of 
 Then, run `wt merge` to merge back your worktree.
 
 Then tell the user what you accomplished as a quick tl;dr, and stop.
+
+Start now, and rememeber:
+
+**DO NOT USE MOCKING EVER** Mocks are useless. Do not use them ever,
+do not ever add code just for the purpose of easy unit tests. ever.
