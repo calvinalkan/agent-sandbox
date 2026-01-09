@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -441,6 +442,18 @@ func resolveAllPreset(ctx PresetContext, disabled map[string]bool) PresetPaths {
 // ErrUnknownPreset indicates that an unknown preset was referenced.
 var ErrUnknownPreset = errors.New("unknown preset")
 
+// AvailablePresets returns a sorted list of available preset names.
+func AvailablePresets() []string {
+	presets := make([]string, 0, len(PresetRegistry))
+	for name := range PresetRegistry {
+		presets = append(presets, name)
+	}
+	// Sort for consistent output
+	slices.Sort(presets)
+
+	return presets
+}
+
 // ExpandPresets processes the preset configuration and returns merged paths.
 //
 // The preset system works as follows:
@@ -472,7 +485,7 @@ func ExpandPresets(presets []string, ctx PresetContext) (PresetPaths, error) {
 
 		// Validate preset exists
 		if _, exists := PresetRegistry[name]; !exists {
-			return PresetPaths{}, fmt.Errorf("%w: %s", ErrUnknownPreset, name)
+			return PresetPaths{}, fmt.Errorf("%w: %s (available: %s)", ErrUnknownPreset, name, strings.Join(AvailablePresets(), ", "))
 		}
 
 		// Toggle semantics: last mention wins

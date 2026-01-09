@@ -1518,3 +1518,27 @@ func Test_AddWrapperMounts_Full_Setup_With_All_Components(t *testing.T) {
 		}
 	}
 }
+
+func Test_ErrDockerSocketNotFound_Contains_Hint(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error message contains a helpful hint
+	errMsg := ErrDockerSocketNotFound.Error()
+	if !strings.Contains(errMsg, "docker") {
+		t.Error("ErrDockerSocketNotFound should mention docker")
+	}
+
+	if !strings.Contains(errMsg, "running") || !strings.Contains(errMsg, "/var/run/docker.sock") {
+		t.Error("ErrDockerSocketNotFound should ask if docker is running and mention socket path")
+	}
+}
+
+func Test_ErrSelfBinaryNotFound_Contains_Context(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error message provides context
+	errMsg := ErrSelfBinaryNotFound.Error()
+	if !strings.Contains(errMsg, "agent-sandbox") || !strings.Contains(errMsg, "binary") {
+		t.Error("ErrSelfBinaryNotFound should mention agent-sandbox binary")
+	}
+}

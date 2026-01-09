@@ -1318,3 +1318,42 @@ func Test_RandomString8_Returns_Different_Values(t *testing.T) {
 		t.Error("expected different random strings")
 	}
 }
+
+func Test_ErrNotLinux_Contains_Hint(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error message contains the hint about why Linux is required
+	if !strings.Contains(ErrNotLinux.Error(), "Linux") {
+		t.Error("ErrNotLinux should mention Linux")
+	}
+
+	if !strings.Contains(ErrNotLinux.Error(), "bwrap") || !strings.Contains(ErrNotLinux.Error(), "namespaces") {
+		t.Error("ErrNotLinux should explain why Linux is required (bwrap uses Linux namespaces)")
+	}
+}
+
+func Test_ErrRunningAsRoot_Contains_Hint(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error message contains a hint about what to do
+	if !strings.Contains(ErrRunningAsRoot.Error(), "root") {
+		t.Error("ErrRunningAsRoot should mention root")
+	}
+
+	if !strings.Contains(ErrRunningAsRoot.Error(), "regular user") {
+		t.Error("ErrRunningAsRoot should suggest using a regular user account")
+	}
+}
+
+func Test_ErrBwrapNotFound_Contains_Install_Hint(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error message contains installation instructions
+	if !strings.Contains(ErrBwrapNotFound.Error(), "bwrap") {
+		t.Error("ErrBwrapNotFound should mention bwrap")
+	}
+
+	if !strings.Contains(ErrBwrapNotFound.Error(), "apt install bubblewrap") {
+		t.Error("ErrBwrapNotFound should contain installation hint")
+	}
+}

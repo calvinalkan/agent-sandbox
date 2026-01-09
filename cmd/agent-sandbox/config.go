@@ -13,10 +13,10 @@ import (
 )
 
 // ErrDuplicateConfigFiles is returned when both .json and .jsonc config files exist.
-var ErrDuplicateConfigFiles = errors.New("duplicate config files")
+var ErrDuplicateConfigFiles = errors.New("duplicate config files found")
 
 // ErrInvalidCommandRule is returned when a command rule has an invalid type.
-var ErrInvalidCommandRule = errors.New("command rule must be boolean or string")
+var ErrInvalidCommandRule = errors.New("command rule must be boolean or string (true, false, \"@git\", or \"/path/to/script\")")
 
 // CommandRuleKind represents the type of command wrapper rule.
 type CommandRuleKind int

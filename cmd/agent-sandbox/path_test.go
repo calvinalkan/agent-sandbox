@@ -1840,3 +1840,44 @@ func Test_isPathUnder_Returns_False_When_Parent(t *testing.T) {
 		t.Error("isPathUnder should return false when 'child' is actually parent")
 	}
 }
+
+func Test_ErrWorkDirExcluded_Contains_Hint(t *testing.T) {
+	t.Parallel()
+
+	// Create a temporary directory and exclude it
+	tmpDir := t.TempDir()
+	excludedDir := tmpDir + "/excluded"
+
+	err := os.MkdirAll(excludedDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths := []ResolvedPath{
+		{
+			Original: excludedDir,
+			Resolved: excludedDir,
+			Access:   PathAccessExclude,
+			Source:   PathSourceCLI,
+		},
+	}
+
+	// Working directory is inside excluded path
+	workDir := excludedDir + "/project"
+
+	err = os.MkdirAll(workDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	validationErr := ValidateWorkDirNotExcluded(paths, workDir)
+	if validationErr == nil {
+		t.Fatal("expected error for workdir inside excluded path")
+	}
+
+	// Error should contain actionable hint
+	errMsg := validationErr.Error()
+	if !strings.Contains(errMsg, "change directory") || !strings.Contains(errMsg, "remove exclusion") {
+		t.Errorf("error should suggest changing directory or removing exclusion, got: %s", errMsg)
+	}
+}

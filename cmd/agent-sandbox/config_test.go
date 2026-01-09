@@ -1011,3 +1011,69 @@ func Test_MergeConfigs_Concatenates_Filesystem_Arrays(t *testing.T) {
 		})
 	}
 }
+
+func Test_ErrDuplicateConfigFiles_Contains_Instructions(t *testing.T) {
+	t.Parallel()
+
+	// Create temp directory with both .json and .jsonc files
+	tmpDir := t.TempDir()
+	jsonPath := tmpDir + "/config.json"
+	jsoncPath := tmpDir + "/config.jsonc"
+
+	err := os.WriteFile(jsonPath, []byte("{}"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(jsoncPath, []byte("{}"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to find config - should fail with helpful error
+	basePath := tmpDir + "/config"
+
+	_, findErr := findConfigFile(basePath, false)
+	if findErr == nil {
+		t.Fatal("expected error when both .json and .jsonc exist")
+	}
+
+	// Error should mention both files and suggest removing one
+	errMsg := findErr.Error()
+	if !strings.Contains(errMsg, ".json") {
+		t.Errorf("error should mention .json file, got: %s", errMsg)
+	}
+
+	if !strings.Contains(errMsg, ".jsonc") {
+		t.Errorf("error should mention .jsonc file, got: %s", errMsg)
+	}
+
+	if !strings.Contains(errMsg, "remove one") {
+		t.Errorf("error should suggest removing one file, got: %s", errMsg)
+	}
+}
+
+func Test_Config_Parsing_Error_Includes_File_Path(t *testing.T) {
+	t.Parallel()
+
+	// Create temp directory with invalid JSON
+	tmpDir := t.TempDir()
+	configPath := tmpDir + "/config.json"
+
+	err := os.WriteFile(configPath, []byte("{invalid json}"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to load config - should fail with error mentioning file path
+	_, loadErr := loadConfigFile(configPath)
+	if loadErr == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+
+	// Error should include the file path
+	errMsg := loadErr.Error()
+	if !strings.Contains(errMsg, configPath) {
+		t.Errorf("error should include config file path %s, got: %s", configPath, errMsg)
+	}
+}

@@ -695,6 +695,34 @@ func Test_execPreset_Returns_Error_For_Unknown_Preset(t *testing.T) {
 	}
 }
 
+func Test_ErrUnknownCommandPreset_Lists_Available_Presets(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error message lists available command presets
+	errMsg := ErrUnknownCommandPreset.Error()
+	if !strings.Contains(errMsg, "available:") {
+		t.Error("ErrUnknownCommandPreset should list available presets")
+	}
+
+	if !strings.Contains(errMsg, "@git") {
+		t.Error("ErrUnknownCommandPreset should mention @git as available")
+	}
+}
+
+func Test_ErrNotInSandbox_Contains_Explanation(t *testing.T) {
+	t.Parallel()
+
+	// Verify the error explains this is an internal command
+	errMsg := ErrNotInSandbox.Error()
+	if !strings.Contains(errMsg, "sandbox") {
+		t.Error("ErrNotInSandbox should mention sandbox")
+	}
+
+	if !strings.Contains(errMsg, "internal") {
+		t.Error("ErrNotInSandbox should explain this is an internal command")
+	}
+}
+
 // ============================================================================
 // Integration test - wrap-binary with real sandbox (skipped if not on Linux)
 // ============================================================================

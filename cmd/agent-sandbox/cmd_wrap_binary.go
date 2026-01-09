@@ -19,7 +19,7 @@ const PresetGit = "@git"
 // Static errors for wrap-binary command.
 var (
 	// ErrNotInSandbox is returned when wrap-binary is called outside a sandbox.
-	ErrNotInSandbox = errors.New("wrap-binary can only run inside sandbox")
+	ErrNotInSandbox = errors.New("wrap-binary can only run inside sandbox (this is an internal command)")
 	// ErrWrapBinaryNoCommand is returned when wrap-binary is called without a command.
 	ErrWrapBinaryNoCommand = errors.New("wrap-binary requires command name")
 	// ErrWrapBinaryMissingFlag is returned when neither --preset nor --script is provided.
@@ -29,7 +29,7 @@ var (
 	// ErrRealBinaryNotFound is returned when the real binary cannot be found.
 	ErrRealBinaryNotFound = errors.New("real binary not found")
 	// ErrUnknownCommandPreset is returned when an unknown command preset is specified.
-	ErrUnknownCommandPreset = errors.New("unknown command preset")
+	ErrUnknownCommandPreset = errors.New("unknown command preset (available: @git)")
 )
 
 // WrapBinaryCmd creates the hidden wrap-binary command.

@@ -2703,3 +2703,55 @@ func Test_ExpandPresets_Disable_Git_Preset(t *testing.T) {
 		t.Errorf("!@git should still include WorkDir from @base, got rw: %v", paths.Rw)
 	}
 }
+
+func Test_ExpandPresets_Unknown_Preset_Lists_Available(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	_, err := ExpandPresets([]string{"@nonexistent"}, ctx)
+	if err == nil {
+		t.Fatal("expected error for unknown preset, got nil")
+	}
+
+	// Error should list available presets
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "available:") {
+		t.Errorf("error should include 'available:', got: %v", errMsg)
+	}
+
+	// Error should mention specific available presets
+	for _, preset := range []string{"@all", "@base", "@git", "@caches"} {
+		if !strings.Contains(errMsg, preset) {
+			t.Errorf("error should mention available preset %s, got: %v", preset, errMsg)
+		}
+	}
+}
+
+func Test_AvailablePresets_Returns_Sorted_List(t *testing.T) {
+	t.Parallel()
+
+	presets := AvailablePresets()
+
+	if len(presets) == 0 {
+		t.Fatal("AvailablePresets should return non-empty list")
+	}
+
+	// Check that it includes expected presets
+	expected := []string{"@all", "@base", "@caches", "@git", "@lint/all", "@lint/go", "@lint/python", "@lint/ts"}
+	for _, preset := range expected {
+		if !sliceContains(presets, preset) {
+			t.Errorf("AvailablePresets should include %s, got: %v", preset, presets)
+		}
+	}
+
+	// Check that it's sorted
+	for i := 1; i < len(presets); i++ {
+		if presets[i] < presets[i-1] {
+			t.Errorf("AvailablePresets should be sorted, but %s comes after %s", presets[i-1], presets[i])
+		}
+	}
+}

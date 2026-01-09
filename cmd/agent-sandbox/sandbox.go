@@ -64,7 +64,7 @@ func ExecuteSandbox(
 	// Start the process
 	err := cmd.Start()
 	if err != nil {
-		return 1, fmt.Errorf("starting bwrap: %w", err)
+		return 1, fmt.Errorf("starting bwrap: %w (check if kernel supports user namespaces: sysctl kernel.unprivileged_userns_clone)", err)
 	}
 
 	// Get force-kill channel from context (may be nil)

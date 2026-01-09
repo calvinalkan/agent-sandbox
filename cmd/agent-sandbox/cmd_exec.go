@@ -19,11 +19,11 @@ import (
 // Static errors for platform prerequisites.
 var (
 	// ErrNoCommand is returned when exec is called without a command.
-	ErrNoCommand = errors.New("no command specified")
+	ErrNoCommand = errors.New("no command specified (usage: agent-sandbox <command> [args])")
 	// ErrNotLinux is returned when running on a non-Linux platform.
-	ErrNotLinux = errors.New("agent-sandbox requires Linux")
+	ErrNotLinux = errors.New("agent-sandbox requires Linux (bwrap uses Linux namespaces)")
 	// ErrRunningAsRoot is returned when running as root user.
-	ErrRunningAsRoot = errors.New("agent-sandbox cannot run as root")
+	ErrRunningAsRoot = errors.New("agent-sandbox cannot run as root (use a regular user account)")
 	// ErrBwrapNotFound is returned when bwrap is not in PATH.
 	ErrBwrapNotFound = errors.New("bwrap not found in PATH (try installing with: sudo apt install bubblewrap)")
 	// ErrInvalidCmdFlag is returned when a --cmd flag value is malformed.

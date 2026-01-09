@@ -218,7 +218,7 @@ func resolveOnePath(pattern string, access PathAccess, source PathSource, homeDi
 				continue
 			}
 			// Permission denied and other errors are real errors
-			return nil, fmt.Errorf("checking path %q: %w", path, err)
+			return nil, fmt.Errorf("checking path %q: %w (check file permissions)", path, err)
 		}
 
 		// Resolve symlinks to get real path
@@ -230,7 +230,7 @@ func resolveOnePath(pattern string, access PathAccess, source PathSource, homeDi
 				continue
 			}
 			// Other errors (permission denied on symlink target, etc.) are real errors
-			return nil, fmt.Errorf("resolving symlinks for %q: %w", path, err)
+			return nil, fmt.Errorf("resolving symlinks for %q: %w (check symlink target permissions)", path, err)
 		}
 
 		result = append(result, ResolvedPath{

@@ -24,7 +24,7 @@ const SandboxBinaryPath = "/run/agent-sandbox"
 const SandboxMarkerPath = "/run/.sandbox-marker"
 
 // ErrDockerSocketNotFound is returned when docker is enabled but the socket cannot be found.
-var ErrDockerSocketNotFound = errors.New("docker socket not found")
+var ErrDockerSocketNotFound = errors.New("docker socket not found (is docker running? check /var/run/docker.sock)")
 
 // ErrSelfBinaryNotFound is returned when the agent-sandbox binary cannot be located.
 var ErrSelfBinaryNotFound = errors.New("cannot locate agent-sandbox binary")
