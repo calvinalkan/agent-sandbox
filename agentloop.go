@@ -55,7 +55,7 @@ func main() {
 	tmuxSession = filepath.Base(cwd) + "-agents"
 
 	log.SetFlags(log.Ltime)
-	log.Printf("orchestrator: %d agents, session=%s", *numAgents, tmuxSession)
+	log.Printf("starting: max %d agent(s), tmux=%s", *numAgents, tmuxSession)
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -63,6 +63,8 @@ func main() {
 
 	// Ensure tmux session exists
 	ensureTmuxSession()
+
+	lastStatus := time.Now()
 
 	for {
 		// Check for shutdown signal (non-blocking)
@@ -77,9 +79,21 @@ func main() {
 
 		// Get ready tickets
 		readyTickets := getReadyTickets()
-		
+
 		// Count running agents
 		running := countRunningAgents()
+		activeTickets := getActiveTickets()
+
+		// Periodic status (every 10s)
+		if time.Since(lastStatus) >= 10*time.Second {
+			if len(activeTickets) > 0 {
+				log.Printf("running: %s | waiting: %d tickets", 
+					strings.Join(activeTickets, ", "), len(readyTickets))
+			} else {
+				log.Printf("idle | waiting: %d tickets", len(readyTickets))
+			}
+			lastStatus = time.Now()
+		}
 
 		if len(readyTickets) == 0 {
 			time.Sleep(1 * time.Second)
@@ -113,7 +127,7 @@ func main() {
 			continue
 		}
 
-		log.Printf("started %s", ticketID)
+		log.Printf("agent started: %s", ticketID)
 		time.Sleep(1 * time.Second)
 	}
 }
@@ -153,43 +167,39 @@ func getReadyTickets() []string {
 }
 
 func countRunningAgents() int {
-	cmd := exec.Command("tmux", "list-windows", "-t", tmuxSession, "-F", "#{window_name}:#{pane_pid}")
+	return len(getActiveTickets())
+}
+
+func getActiveTickets() []string {
+	// Get ticket IDs from tmux windows - tmux is source of truth
+	cmd := exec.Command("tmux", "list-windows", "-t", tmuxSession, "-F", "#{window_name}")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return 0
+		return nil
 	}
 
-	count := 0
-	lines := strings.SplitSeq(strings.TrimSpace(out.String()), "\n")
-	for line := range lines {
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, ":")
-		if len(parts) < 2 {
-			continue
-		}
-		
-		windowName := parts[0]
-		pid := parts[len(parts)-1]
-		
-		// Only count ticket windows
-		if !strings.HasPrefix(windowName, "ticket-") {
-			continue
-		}
-
-		// Check if pi is running as child of the shell
-		pgrepCmd := exec.Command("pgrep", "-P", pid, "-x", "pi")
-		if pgrepCmd.Run() == nil {
-			count++
+	var tickets []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		if strings.HasPrefix(line, "ticket-") {
+			tickets = append(tickets, strings.TrimPrefix(line, "ticket-"))
 		}
 	}
-	return count
+	return tickets
 }
 
 func createWorktree(ticketID string) (string, error) {
 	wtName := "ticket-" + ticketID
+
+	// Check if worktree already exists
+	pathCmd := exec.Command("wt", "info", wtName, "--field", "path")
+	var pathOut bytes.Buffer
+	pathCmd.Stdout = &pathOut
+	if pathCmd.Run() == nil {
+		return strings.TrimSpace(pathOut.String()), nil
+	}
+
+	// Create new worktree
 	cmd := exec.Command("wt", "create", "-n", wtName)
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
@@ -198,8 +208,9 @@ func createWorktree(ticketID string) (string, error) {
 		return "", fmt.Errorf("%v: %s", err, errOut.String())
 	}
 
-	pathCmd := exec.Command("wt", "info", wtName, "--field", "path")
-	var pathOut bytes.Buffer
+	// Get path of newly created worktree
+	pathCmd = exec.Command("wt", "info", wtName, "--field", "path")
+	pathOut.Reset()
 	pathCmd.Stdout = &pathOut
 	if err := pathCmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to get worktree path: %v", err)
@@ -218,12 +229,16 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 
 	windowName := "ticket-" + ticketID
 	piCmd := fmt.Sprintf("cd %s && pi @.wt/prompt.md", wtPath)
+	
+	// Set remain-on-exit so we can detect completion status
+	exec.Command("tmux", "set-option", "-t", tmuxSession, "remain-on-exit", "on").Run()
+	
 	cmd := exec.Command("tmux", "new-window", "-t", tmuxSession, "-n", windowName, piCmd)
 	return cmd.Run()
 }
 
 func cleanupDeadAgents() {
-	cmd := exec.Command("tmux", "list-windows", "-t", tmuxSession, "-F", "#{window_name}:#{pane_pid}")
+	cmd := exec.Command("tmux", "list-windows", "-t", tmuxSession, "-F", "#{window_name}:#{pane_pid}:#{pane_dead}")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -235,35 +250,60 @@ func cleanupDeadAgents() {
 			continue
 		}
 		parts := strings.Split(line, ":")
-		if len(parts) < 2 {
+		if len(parts) < 3 {
 			continue
 		}
 
 		windowName := parts[0]
-		pid := parts[len(parts)-1]
+		pid := parts[1]
+		paneDead := parts[2] == "1"
 
 		if !strings.HasPrefix(windowName, "ticket-") {
 			continue
 		}
 
-		// Check if pi is still running
-		pgrepCmd := exec.Command("pgrep", "-P", pid, "-x", "pi")
-		if pgrepCmd.Run() == nil {
-			continue // still running
-		}
-
-		// Agent finished - check ticket status
 		ticketID := strings.TrimPrefix(windowName, "ticket-")
-		status := getTicketStatus(ticketID)
+		branchName := "ticket-" + ticketID
 
-		if status == "closed" {
-			log.Printf("finished %s", ticketID)
-		} else {
-			log.Printf("WARNING: agent exited but ticket %s is %s", ticketID, status)
+		// Case 1: Pane is dead (pi exited)
+		if paneDead {
+			status := getTicketStatus(ticketID)
+			if status == "closed" {
+				log.Printf("agent done: %s", ticketID)
+			} else {
+				log.Printf("WARN: agent exited, ticket %s still %s", ticketID, status)
+			}
+			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
+			continue
 		}
 
-		// Kill the tmux window
-		exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
+		// Case 2: Ticket closed AND branch gone (worktree merged) → agent done, kill pi
+		status := getTicketStatus(ticketID)
+		if status == "closed" && !branchExists(branchName) {
+			log.Printf("agent done: %s", ticketID)
+			// SIGTERM the pi process
+			killPiInPane(pid)
+			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
+			continue
+		}
+	}
+}
+
+func branchExists(branchName string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", branchName)
+	return cmd.Run() == nil
+}
+
+func killPiInPane(shellPid string) {
+	// Find pi process as child of shell and kill it
+	pgrepCmd := exec.Command("pgrep", "-P", shellPid, "-x", "pi")
+	var out bytes.Buffer
+	pgrepCmd.Stdout = &out
+	if pgrepCmd.Run() == nil {
+		var pid int
+		if _, err := fmt.Sscanf(strings.TrimSpace(out.String()), "%d", &pid); err == nil {
+			syscall.Kill(pid, syscall.SIGTERM)
+		}
 	}
 }
 
@@ -287,83 +327,7 @@ func getTicketStatus(ticketID string) string {
 }
 
 func shutdown(sigCh <-chan os.Signal) {
-	log.Printf("shutting down, sending SIGTERM to agents...")
-
-	// Get all agent pids
-	pids := getAgentPids()
-	if len(pids) == 0 {
-		log.Printf("no agents running")
-		return
-	}
-
-	// Send SIGTERM to all
-	for _, pid := range pids {
-		syscall.Kill(pid, syscall.SIGTERM)
-	}
-
-	// Wait for completion, timeout, or second signal
-	deadline := time.After(10 * time.Second)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-sigCh:
-			log.Printf("forced exit, sending SIGKILL...")
-			for _, pid := range getAgentPids() {
-				syscall.Kill(pid, syscall.SIGKILL)
-			}
-			return
-		case <-deadline:
-			log.Printf("timeout, sending SIGKILL...")
-			for _, pid := range getAgentPids() {
-				syscall.Kill(pid, syscall.SIGKILL)
-			}
-			return
-		case <-ticker.C:
-			if len(getAgentPids()) == 0 {
-				log.Printf("all agents stopped")
-				return
-			}
-		}
-	}
-}
-
-func getAgentPids() []int {
-	cmd := exec.Command("tmux", "list-windows", "-t", tmuxSession, "-F", "#{window_name}:#{pane_pid}")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil
-	}
-
-	var pids []int
-	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, ":")
-		if len(parts) < 2 {
-			continue
-		}
-
-		windowName := parts[0]
-		shellPid := parts[len(parts)-1]
-
-		if !strings.HasPrefix(windowName, "ticket-") {
-			continue
-		}
-
-		// Find pi process as child of shell
-		pgrepCmd := exec.Command("pgrep", "-P", shellPid, "-x", "pi")
-		var pgrepOut bytes.Buffer
-		pgrepCmd.Stdout = &pgrepOut
-		if pgrepCmd.Run() == nil {
-			var pid int
-			if _, err := fmt.Sscanf(strings.TrimSpace(pgrepOut.String()), "%d", &pid); err == nil {
-				pids = append(pids, pid)
-			}
-		}
-	}
-	return pids
+	log.Printf("shutting down...")
+	exec.Command("tmux", "kill-session", "-t", tmuxSession).Run()
+	log.Printf("stopped")
 }
