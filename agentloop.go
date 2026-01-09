@@ -421,13 +421,28 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 		}
 
 		// Don't start new agents if draining
-		if draining || len(readyTickets) == 0 || running >= maxAgents {
+		if draining || running >= maxAgents {
 			time.Sleep(backoff)
 			backoff = min(backoff*2, maxBackoff)
 			continue
 		}
 
-		ticketID := readyTickets[0]
+		// Check for orphaned tickets first (in_progress with worktree but no agent)
+		orphanedTickets := getOrphanedTickets()
+		
+		var ticketID string
+		var isOrphaned bool
+		if len(orphanedTickets) > 0 {
+			ticketID = orphanedTickets[0]
+			isOrphaned = true
+			log.Printf("restarting orphaned ticket: %s", formatTicketWithTitle(ticketID))
+		} else if len(readyTickets) > 0 {
+			ticketID = readyTickets[0]
+		} else {
+			time.Sleep(backoff)
+			backoff = min(backoff*2, maxBackoff)
+			continue
+		}
 
 		promptBytes, err := os.ReadFile(promptFile)
 		if err != nil {
@@ -449,7 +464,11 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 			continue
 		}
 
-		log.Printf("agent started: %s", formatTicketWithTitle(ticketID))
+		if isOrphaned {
+			log.Printf("agent restarted: %s", formatTicketWithTitle(ticketID))
+		} else {
+			log.Printf("agent started: %s", formatTicketWithTitle(ticketID))
+		}
 		backoff = 1 * time.Second
 		time.Sleep(backoff)
 	}
@@ -480,6 +499,55 @@ func getReadyTickets() []string {
 		}
 	}
 	return tickets
+}
+
+func getInProgressTickets() []string {
+	cmd := exec.Command("tk", "ls", "--status", "in_progress")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+
+	var tickets []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			tickets = append(tickets, fields[0])
+		}
+	}
+	return tickets
+}
+
+// getOrphanedTickets returns in_progress tickets that have a worktree but no running agent
+func getOrphanedTickets() []string {
+	inProgress := getInProgressTickets()
+	activeTickets := getActiveTickets()
+
+	// Build set of active tickets for fast lookup
+	active := make(map[string]bool)
+	for _, id := range activeTickets {
+		active[id] = true
+	}
+
+	var orphaned []string
+	for _, id := range inProgress {
+		if active[id] {
+			continue // agent is running, not orphaned
+		}
+		// Check if worktree exists
+		wtName := "ticket-" + id
+		pathCmd := exec.Command("wt", "info", wtName, "--field", "path")
+		if pathCmd.Run() == nil {
+			// Worktree exists but no agent running → orphaned
+			orphaned = append(orphaned, id)
+		}
+	}
+	return orphaned
 }
 
 func countRunningAgents() int {

@@ -15,7 +15,8 @@ Implement the task, ensure all acceptance criteria are met, and all e2e tests ar
 
 All functioanlity should have tests that erorr handling works as expected.
 
-Remember, test names must be in the pattern of `Test_Foo_Does_Bar_When_Baz`,
+Remember, test names must be in the pattern of `Test_Foo_Does_Bar_When_Baz`.
+
 look at `cmd/agent-sandbox/testing_test.go` for how use the cli tester.
 
 Run `make lint`, `make modernize` and `make test` frequently.
