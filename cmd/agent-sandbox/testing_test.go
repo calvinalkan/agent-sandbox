@@ -193,6 +193,12 @@ type CLI struct {
 	Env map[string]string
 }
 
+// systemPath returns a clean PATH containing only system binary directories.
+// This avoids interference from wrapper scripts in development environments.
+func systemPath() string {
+	return "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
+}
+
 // NewCLITester creates a new test CLI with a temp directory.
 // The environment is pre-seeded with HOME, PATH, and TMPDIR.
 // TMPDIR points to a separate writable directory because HOME==WorkDir
@@ -208,7 +214,7 @@ func NewCLITester(t *testing.T) *CLI {
 		Dir: dir,
 		Env: map[string]string{
 			"HOME":   dir,
-			"PATH":   os.Getenv("PATH"),
+			"PATH":   systemPath(),
 			"TMPDIR": tmpDir,
 		},
 	}
@@ -226,7 +232,7 @@ func NewCLITesterAt(t *testing.T, dir string) *CLI {
 		Dir: dir,
 		Env: map[string]string{
 			"HOME":   dir,
-			"PATH":   os.Getenv("PATH"),
+			"PATH":   systemPath(),
 			"TMPDIR": tmpDir,
 		},
 	}
