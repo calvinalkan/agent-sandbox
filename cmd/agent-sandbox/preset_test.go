@@ -2204,3 +2204,497 @@ func Test_AllPreset_Uses_Absolute_Paths_When_Called(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// ExpandPresets function tests
+// ============================================================================
+
+func Test_ExpandPresets_Applies_All_By_Default_When_Empty_Presets(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths, err := ExpandPresets(nil, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// @all is the default, so we should have:
+	// - WorkDir and /tmp writable (from @base)
+	// - cache paths writable (from @caches)
+	// - secrets excluded (from @base)
+	// - lint configs protected (from @lint/all)
+
+	// From @base
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("default expansion should include WorkDir from @base, got rw: %v", paths.Rw)
+	}
+
+	if !sliceContains(paths.Exclude, "/home/user/.ssh") {
+		t.Errorf("default expansion should exclude ~/.ssh from @base, got exclude: %v", paths.Exclude)
+	}
+
+	// From @caches
+	if !sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("default expansion should include ~/.cache from @caches, got rw: %v", paths.Rw)
+	}
+
+	// From @lint/all (via @all)
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("default expansion should include biome.json from @lint/all, got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_Applies_All_By_Default_When_Empty_Slice(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths, err := ExpandPresets([]string{}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be same as nil - @all is default
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("empty slice expansion should include WorkDir from @base, got rw: %v", paths.Rw)
+	}
+}
+
+func Test_ExpandPresets_Removes_Preset_With_Negation(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths, err := ExpandPresets([]string{"!@lint/python"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT include Python lint configs
+	if sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("!@lint/python should exclude pyproject.toml, got ro: %v", paths.Ro)
+	}
+
+	// Should still include other lint configs
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("!@lint/python should still include biome.json from @lint/ts, got ro: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("!@lint/python should still include .golangci.yml from @lint/go, got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_Removes_All_Lint_With_LintAll_Negation(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths, err := ExpandPresets([]string{"!@lint/all"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT include any lint configs
+	if sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("!@lint/all should exclude biome.json, got ro: %v", paths.Ro)
+	}
+
+	if sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("!@lint/all should exclude .golangci.yml, got ro: %v", paths.Ro)
+	}
+
+	if sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("!@lint/all should exclude pyproject.toml, got ro: %v", paths.Ro)
+	}
+
+	// Should still include base functionality
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("!@lint/all should still include WorkDir from @base, got rw: %v", paths.Rw)
+	}
+
+	if !sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("!@lint/all should still include ~/.cache from @caches, got rw: %v", paths.Rw)
+	}
+}
+
+func Test_ExpandPresets_Removes_Caches_With_Negation(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths, err := ExpandPresets([]string{"!@caches"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT include cache paths
+	if sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("!@caches should exclude ~/.cache, got rw: %v", paths.Rw)
+	}
+
+	if sliceContains(paths.Rw, "/home/user/.npm") {
+		t.Errorf("!@caches should exclude ~/.npm, got rw: %v", paths.Rw)
+	}
+
+	// Should still include base functionality
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("!@caches should still include WorkDir from @base, got rw: %v", paths.Rw)
+	}
+}
+
+func Test_ExpandPresets_Returns_Error_For_Unknown_Preset(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	_, err := ExpandPresets([]string{"@unknown"}, ctx)
+	if err == nil {
+		t.Fatal("expected error for unknown preset, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unknown preset") {
+		t.Errorf("error should mention 'unknown preset', got: %v", err)
+	}
+
+	if !strings.Contains(err.Error(), "@unknown") {
+		t.Errorf("error should mention the preset name '@unknown', got: %v", err)
+	}
+}
+
+func Test_ExpandPresets_Returns_Error_For_Unknown_Negated_Preset(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	_, err := ExpandPresets([]string{"!@invalid"}, ctx)
+	if err == nil {
+		t.Fatal("expected error for unknown negated preset, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unknown preset") {
+		t.Errorf("error should mention 'unknown preset', got: %v", err)
+	}
+
+	if !strings.Contains(err.Error(), "@invalid") {
+		t.Errorf("error should mention the preset name '@invalid', got: %v", err)
+	}
+}
+
+func Test_ExpandPresets_Handles_Multiple_Negations(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths, err := ExpandPresets([]string{"!@lint/python", "!@lint/go"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT include Python or Go lint configs
+	if sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("should exclude pyproject.toml when @lint/python is negated, got ro: %v", paths.Ro)
+	}
+
+	if sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("should exclude .golangci.yml when @lint/go is negated, got ro: %v", paths.Ro)
+	}
+
+	// Should still include TypeScript lint configs
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("should include biome.json from @lint/ts, got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_ReEnables_After_Disable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// Disable all lint, then re-enable Python
+	paths, err := ExpandPresets([]string{"!@lint/all", "@lint/python"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should include Python lint configs (re-enabled)
+	if !sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/python should be re-enabled after !@lint/all, got ro: %v", paths.Ro)
+	}
+
+	// Should NOT include TS or Go lint configs (still disabled)
+	if sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@lint/ts should still be disabled after !@lint/all, got ro: %v", paths.Ro)
+	}
+
+	if sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("@lint/go should still be disabled after !@lint/all, got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_Last_Mention_Wins_Toggle_Semantics(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// Disable Python, then re-enable it
+	paths, err := ExpandPresets([]string{"!@lint/python", "@lint/python"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should include Python lint configs (last mention wins)
+	if !sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/python should be enabled (last mention wins), got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_Disable_After_Enable_Works(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// Enable Python explicitly, then disable it
+	paths, err := ExpandPresets([]string{"@lint/python", "!@lint/python"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT include Python lint configs (last mention wins)
+	if sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/python should be disabled (last mention wins), got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_Disable_All_Then_Enable_Base(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// Disable @all entirely, then re-enable @base
+	paths, err := ExpandPresets([]string{"!@all", "@base"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should include base functionality (re-enabled)
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("@base should be enabled after !@all + @base, got rw: %v", paths.Rw)
+	}
+
+	if !sliceContains(paths.Exclude, "/home/user/.ssh") {
+		t.Errorf("@base should exclude ~/.ssh after !@all + @base, got exclude: %v", paths.Exclude)
+	}
+
+	// Should NOT include caches (disabled via !@all, not re-enabled)
+	if sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("@caches should still be disabled after !@all, got rw: %v", paths.Rw)
+	}
+
+	// Should NOT include lint configs (disabled via !@all, not re-enabled)
+	if sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@lint/all should still be disabled after !@all, got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_Negating_All_Returns_Empty_Paths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths, err := ExpandPresets([]string{"!@all"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be completely empty
+	if len(paths.Ro) != 0 {
+		t.Errorf("!@all should result in empty ro paths, got: %v", paths.Ro)
+	}
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("!@all should result in empty rw paths, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("!@all should result in empty exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_ExpandPresets_ErrUnknownPreset_Is_Wrapped(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	_, err := ExpandPresets([]string{"@nonexistent"}, ctx)
+	if err == nil {
+		t.Fatal("expected error for unknown preset, got nil")
+	}
+
+	// Error should wrap ErrUnknownPreset
+	if !strings.Contains(err.Error(), ErrUnknownPreset.Error()) {
+		t.Errorf("error should wrap ErrUnknownPreset, got: %v", err)
+	}
+}
+
+func Test_ExpandPresets_Explicit_All_Same_As_Default(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// Explicit @all should be same as default
+	pathsExplicit, err := ExpandPresets([]string{"@all"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	pathsDefault, err := ExpandPresets(nil, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have same number of paths
+	if len(pathsExplicit.Ro) != len(pathsDefault.Ro) {
+		t.Errorf("explicit @all should have same ro paths as default: explicit=%d, default=%d",
+			len(pathsExplicit.Ro), len(pathsDefault.Ro))
+	}
+
+	if len(pathsExplicit.Rw) != len(pathsDefault.Rw) {
+		t.Errorf("explicit @all should have same rw paths as default: explicit=%d, default=%d",
+			len(pathsExplicit.Rw), len(pathsDefault.Rw))
+	}
+
+	if len(pathsExplicit.Exclude) != len(pathsDefault.Exclude) {
+		t.Errorf("explicit @all should have same exclude paths as default: explicit=%d, default=%d",
+			len(pathsExplicit.Exclude), len(pathsDefault.Exclude))
+	}
+}
+
+func Test_ExpandPresets_With_Git_Directory(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths, err := ExpandPresets(nil, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should include git paths from @git
+	expectedHooks := filepath.Join(gitDir, "hooks")
+	if !sliceContains(paths.Ro, expectedHooks) {
+		t.Errorf("default expansion should include .git/hooks from @git, got ro: %v", paths.Ro)
+	}
+
+	expectedConfig := filepath.Join(gitDir, "config")
+	if !sliceContains(paths.Ro, expectedConfig) {
+		t.Errorf("default expansion should include .git/config from @git, got ro: %v", paths.Ro)
+	}
+}
+
+func Test_ExpandPresets_Disable_Git_Preset(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths, err := ExpandPresets([]string{"!@git"}, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT include git paths
+	expectedHooks := filepath.Join(gitDir, "hooks")
+	if sliceContains(paths.Ro, expectedHooks) {
+		t.Errorf("!@git should exclude .git/hooks, got ro: %v", paths.Ro)
+	}
+
+	expectedConfig := filepath.Join(gitDir, "config")
+	if sliceContains(paths.Ro, expectedConfig) {
+		t.Errorf("!@git should exclude .git/config, got ro: %v", paths.Ro)
+	}
+
+	// Should still include base functionality
+	if !sliceContains(paths.Rw, tmpDir) {
+		t.Errorf("!@git should still include WorkDir from @base, got rw: %v", paths.Rw)
+	}
+}

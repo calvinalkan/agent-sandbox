@@ -437,3 +437,71 @@ func resolveAllPreset(ctx PresetContext, disabled map[string]bool) PresetPaths {
 
 	return result
 }
+
+// ErrUnknownPreset indicates that an unknown preset was referenced.
+var ErrUnknownPreset = errors.New("unknown preset")
+
+// ExpandPresets processes the preset configuration and returns merged paths.
+//
+// The preset system works as follows:
+//  1. @all is always the implicit starting point (default)
+//  2. The presets list contains toggles applied on top of @all:
+//     - "!@name" disables a preset
+//     - "@name" (non-negated) re-enables a preset (useful after disabling a parent)
+//  3. Last mention wins for toggle semantics
+//  4. Composite presets (@all, @lint/all) check disabled map for sub-presets
+//
+// Examples:
+//   - []                          → expands @all fully
+//   - ["!@lint/python"]           → @all minus python lint configs
+//   - ["!@lint/all", "@lint/go"]  → @all minus all lint, then add back go lint
+//   - ["!@caches"]                → @all minus cache directories
+func ExpandPresets(presets []string, ctx PresetContext) (PresetPaths, error) {
+	// Track disabled presets (last mention wins)
+	disabled := make(map[string]bool)
+
+	// Track roots to expand in order (deterministic expansion)
+	// @all is always the implicit starting point
+	roots := []string{"@all"}
+	seenRoot := map[string]bool{"@all": true}
+
+	// Process user-specified presets
+	for _, p := range presets {
+		negated := strings.HasPrefix(p, "!")
+		name := strings.TrimPrefix(p, "!")
+
+		// Validate preset exists
+		if _, exists := PresetRegistry[name]; !exists {
+			return PresetPaths{}, fmt.Errorf("%w: %s", ErrUnknownPreset, name)
+		}
+
+		// Toggle semantics: last mention wins
+		disabled[name] = negated
+
+		// Record explicit roots for non-negated presets
+		// This allows users to do things like: ["!@all", "@base"]
+		// or ["!@lint/all", "@lint/python"]
+		if !negated && !seenRoot[name] {
+			seenRoot[name] = true
+			roots = append(roots, name)
+		}
+	}
+
+	// Expand roots, respecting disabled presets
+	// Duplicates are fine; specificity handles path conflicts later
+	var result PresetPaths
+
+	for _, name := range roots {
+		if disabled[name] {
+			continue
+		}
+
+		preset := PresetRegistry[name]
+		paths := preset.Resolve(ctx, disabled)
+		result.Ro = append(result.Ro, paths.Ro...)
+		result.Rw = append(result.Rw, paths.Rw...)
+		result.Exclude = append(result.Exclude, paths.Exclude...)
+	}
+
+	return result, nil
+}

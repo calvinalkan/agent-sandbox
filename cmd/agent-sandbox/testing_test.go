@@ -362,6 +362,10 @@ func (r *GitRepo) run(args ...string) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.Dir
 
+	// Clear GIT_* environment variables to prevent interference from parent repo
+	// when running tests inside a git worktree (common in development).
+	cmd.Env = filterGitEnv(os.Environ())
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Check if git is not installed
@@ -372,4 +376,22 @@ func (r *GitRepo) run(args ...string) {
 
 		r.t.Fatalf("git %v failed: %v\noutput: %s", args, err, output)
 	}
+}
+
+// filterGitEnv returns env with GIT_DIR, GIT_WORK_TREE, and GIT_INDEX_FILE removed.
+// This prevents test git commands from inheriting parent repo state.
+func filterGitEnv(env []string) []string {
+	result := make([]string, 0, len(env))
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_DIR=") ||
+			strings.HasPrefix(e, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(e, "GIT_INDEX_FILE=") {
+			continue
+		}
+
+		result = append(result, e)
+	}
+
+	return result
 }
