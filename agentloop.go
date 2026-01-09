@@ -664,10 +664,10 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 	var agentCmd string
 	switch agentRunner {
 	case "claude":
-		// Use claude with the prompt file via stdin redirection
-		agentCmd = fmt.Sprintf("cd %s && claude < .wt/prompt.md", wtPath)
+		// Use agent-sandbox wrapper with dangerously-skip-permissions
+		agentCmd = fmt.Sprintf("cd %s && agent-sandbox claude --dangerously-skip-permissions \"$(cat .wt/prompt.md)\"", wtPath)
 	default: // "pi"
-		agentCmd = fmt.Sprintf("cd %s && pi @.wt/prompt.md", wtPath)
+		agentCmd = fmt.Sprintf("cd %s && agent-sandbox pi @.wt/prompt.md", wtPath)
 	}
 
 	var cmd *exec.Cmd
