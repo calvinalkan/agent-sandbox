@@ -445,6 +445,13 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 		}
 
 		if time.Since(lastStatus) >= 10*time.Second {
+			// Filter out dispatched tickets for accurate count
+			availableCount := 0
+			for _, id := range readyTickets {
+				if !isDispatched(id) {
+					availableCount++
+				}
+			}
 			status := ""
 			if draining {
 				status = "[draining] "
@@ -455,9 +462,9 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 					formatted[i] = formatTicketWithTitle(id)
 				}
 				log.Printf("%srunning: %s | %d ready for pickup | max: %d",
-					status, strings.Join(formatted, ", "), len(readyTickets), maxAgents)
+					status, strings.Join(formatted, ", "), availableCount, maxAgents)
 			} else {
-				log.Printf("%sidle | %d ready for pickup | max: %d", status, len(readyTickets), maxAgents)
+				log.Printf("%sidle | %d ready for pickup | max: %d", status, availableCount, maxAgents)
 			}
 			lastStatus = time.Now()
 		}
@@ -885,6 +892,13 @@ func handleConnection(conn net.Conn, stopCh chan struct{}) {
 	case cmd == "status":
 		activeTickets := getActiveTickets()
 		readyTickets := getReadyTickets()
+		// Filter out dispatched tickets for accurate count
+		availableCount := 0
+		for _, id := range readyTickets {
+			if !isDispatched(id) {
+				availableCount++
+			}
+		}
 		uptime := time.Since(startTime).Round(time.Second)
 		maxAgents := getNumAgents()
 		draining := isDraining()
@@ -899,9 +913,9 @@ func handleConnection(conn net.Conn, stopCh chan struct{}) {
 				formatted[i] = formatTicketWithTitle(id)
 			}
 			response = fmt.Sprintf("%srunning: %s | %d ready | max: %d | uptime: %s",
-				status, strings.Join(formatted, ", "), len(readyTickets), maxAgents, uptime)
+				status, strings.Join(formatted, ", "), availableCount, maxAgents, uptime)
 		} else {
-			response = fmt.Sprintf("%sidle | %d ready | max: %d | uptime: %s", status, len(readyTickets), maxAgents, uptime)
+			response = fmt.Sprintf("%sidle | %d ready | max: %d | uptime: %s", status, availableCount, maxAgents, uptime)
 		}
 
 	case strings.HasPrefix(cmd, "scale "):
