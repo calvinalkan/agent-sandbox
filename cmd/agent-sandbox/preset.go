@@ -277,33 +277,163 @@ func resolveGitPaths(workDir string) (GitPaths, error) {
 }
 
 // resolveLintTSPreset returns paths for the @lint/ts preset.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveLintTSPreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+// It protects TypeScript/JavaScript lint and formatting config files:
+//   - biome.json, biome.jsonc
+//   - .eslintrc, .eslintrc.js, .eslintrc.json, .eslintrc.yml, .eslintrc.yaml
+//   - eslint.config.js, eslint.config.mjs, eslint.config.cjs
+//   - .prettierrc, .prettierrc.js, .prettierrc.json, .prettierrc.yml, prettier.config.js
+//   - tsconfig.json, tsconfig.*.json
+//   - .editorconfig
+//
+// Note: @lint/ts ignores the disabled parameter (it's a simple preset).
+func resolveLintTSPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	return PresetPaths{
+		Ro: []string{
+			// Biome
+			ctx.WorkDir + "/biome.json",
+			ctx.WorkDir + "/biome.jsonc",
+			// ESLint (legacy config formats)
+			ctx.WorkDir + "/.eslintrc",
+			ctx.WorkDir + "/.eslintrc.js",
+			ctx.WorkDir + "/.eslintrc.json",
+			ctx.WorkDir + "/.eslintrc.yml",
+			ctx.WorkDir + "/.eslintrc.yaml",
+			// ESLint (flat config)
+			ctx.WorkDir + "/eslint.config.js",
+			ctx.WorkDir + "/eslint.config.mjs",
+			ctx.WorkDir + "/eslint.config.cjs",
+			// Prettier
+			ctx.WorkDir + "/.prettierrc",
+			ctx.WorkDir + "/.prettierrc.js",
+			ctx.WorkDir + "/.prettierrc.json",
+			ctx.WorkDir + "/.prettierrc.yml",
+			ctx.WorkDir + "/prettier.config.js",
+			// TypeScript (with glob for tsconfig.*.json)
+			ctx.WorkDir + "/tsconfig.json",
+			ctx.WorkDir + "/tsconfig.*.json",
+			// EditorConfig
+			ctx.WorkDir + "/.editorconfig",
+		},
+	}
 }
 
 // resolveLintGoPreset returns paths for the @lint/go preset.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveLintGoPreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+// It protects Go lint and formatting config files:
+//   - .golangci.yml, .golangci.yaml, .golangci.toml, .golangci.json
+//   - .editorconfig
+//
+// Note: @lint/go ignores the disabled parameter (it's a simple preset).
+func resolveLintGoPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	return PresetPaths{
+		Ro: []string{
+			// golangci-lint
+			ctx.WorkDir + "/.golangci.yml",
+			ctx.WorkDir + "/.golangci.yaml",
+			ctx.WorkDir + "/.golangci.toml",
+			ctx.WorkDir + "/.golangci.json",
+			// EditorConfig
+			ctx.WorkDir + "/.editorconfig",
+		},
+	}
 }
 
 // resolveLintPythonPreset returns paths for the @lint/python preset.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveLintPythonPreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+// It protects Python lint and formatting config files:
+//   - pyproject.toml (contains ruff, black, mypy, etc. config)
+//   - setup.cfg (legacy config)
+//   - .flake8
+//   - mypy.ini, .mypy.ini
+//   - .pylintrc, pylintrc
+//   - ruff.toml, .ruff.toml
+//   - .editorconfig
+//
+// Note: @lint/python ignores the disabled parameter (it's a simple preset).
+func resolveLintPythonPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	return PresetPaths{
+		Ro: []string{
+			// pyproject.toml (modern Python config: ruff, black, mypy, etc.)
+			ctx.WorkDir + "/pyproject.toml",
+			// setup.cfg (legacy config)
+			ctx.WorkDir + "/setup.cfg",
+			// flake8
+			ctx.WorkDir + "/.flake8",
+			// mypy
+			ctx.WorkDir + "/mypy.ini",
+			ctx.WorkDir + "/.mypy.ini",
+			// pylint
+			ctx.WorkDir + "/.pylintrc",
+			ctx.WorkDir + "/pylintrc",
+			// ruff
+			ctx.WorkDir + "/ruff.toml",
+			ctx.WorkDir + "/.ruff.toml",
+			// EditorConfig
+			ctx.WorkDir + "/.editorconfig",
+		},
+	}
 }
 
 // resolveLintAllPreset returns paths for the @lint/all preset.
-// It expands all lint/* presets, skipping any in the disabled map.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveLintAllPreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+// It expands all lint/* presets (@lint/ts, @lint/go, @lint/python),
+// skipping any that are in the disabled map.
+//
+// This is a composite preset - it respects the disabled map to support
+// negations like "!@lint/python".
+func resolveLintAllPreset(ctx PresetContext, disabled map[string]bool) PresetPaths {
+	var result PresetPaths
+
+	// Map preset names to their resolve functions (avoids init cycle with PresetRegistry)
+	lintPresets := []struct {
+		name    string
+		resolve func(PresetContext, map[string]bool) PresetPaths
+	}{
+		{"@lint/ts", resolveLintTSPreset},
+		{"@lint/go", resolveLintGoPreset},
+		{"@lint/python", resolveLintPythonPreset},
+	}
+
+	for _, p := range lintPresets {
+		if disabled[p.name] {
+			continue // Skip if negated via !@lint/ts etc.
+		}
+
+		paths := p.resolve(ctx, disabled)
+		result.Ro = append(result.Ro, paths.Ro...)
+		result.Rw = append(result.Rw, paths.Rw...)
+		result.Exclude = append(result.Exclude, paths.Exclude...)
+	}
+
+	return result
 }
 
 // resolveAllPreset returns paths for the @all preset.
 // It expands @base, @caches, @git, and @lint/all, skipping any in the disabled map.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveAllPreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+//
+// This is a composite preset - it respects the disabled map to support
+// negations like "!@lint/python" or "!@caches".
+func resolveAllPreset(ctx PresetContext, disabled map[string]bool) PresetPaths {
+	var result PresetPaths
+
+	// Map preset names to their resolve functions (avoids init cycle with PresetRegistry)
+	allPresets := []struct {
+		name    string
+		resolve func(PresetContext, map[string]bool) PresetPaths
+	}{
+		{"@base", resolveBasePreset},
+		{"@caches", resolveCachesPreset},
+		{"@git", resolveGitPreset},
+		{"@lint/all", resolveLintAllPreset},
+	}
+
+	for _, p := range allPresets {
+		if disabled[p.name] {
+			continue // Skip if negated via !@base etc.
+		}
+
+		paths := p.resolve(ctx, disabled)
+		result.Ro = append(result.Ro, paths.Ro...)
+		result.Rw = append(result.Rw, paths.Rw...)
+		result.Exclude = append(result.Exclude, paths.Exclude...)
+	}
+
+	return result
 }

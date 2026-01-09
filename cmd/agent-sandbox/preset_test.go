@@ -1241,3 +1241,966 @@ func Test_GitPreset_Integration_Real_Git_Worktree(t *testing.T) {
 		t.Errorf("@git should include main repo config in ro paths, got: %v", paths.Ro)
 	}
 }
+
+// ============================================================================
+// @lint/ts preset tests
+// ============================================================================
+
+func Test_LintTSPreset_Returns_Biome_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@lint/ts should include biome.json in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/biome.jsonc") {
+		t.Errorf("@lint/ts should include biome.jsonc in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintTSPreset_Returns_ESLint_Legacy_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	expectedFiles := []string{
+		"/home/user/project/.eslintrc",
+		"/home/user/project/.eslintrc.js",
+		"/home/user/project/.eslintrc.json",
+		"/home/user/project/.eslintrc.yml",
+		"/home/user/project/.eslintrc.yaml",
+	}
+
+	for _, expected := range expectedFiles {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/ts should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+func Test_LintTSPreset_Returns_ESLint_Flat_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	expectedFiles := []string{
+		"/home/user/project/eslint.config.js",
+		"/home/user/project/eslint.config.mjs",
+		"/home/user/project/eslint.config.cjs",
+	}
+
+	for _, expected := range expectedFiles {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/ts should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+func Test_LintTSPreset_Returns_Prettier_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	expectedFiles := []string{
+		"/home/user/project/.prettierrc",
+		"/home/user/project/.prettierrc.js",
+		"/home/user/project/.prettierrc.json",
+		"/home/user/project/.prettierrc.yml",
+		"/home/user/project/prettier.config.js",
+	}
+
+	for _, expected := range expectedFiles {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/ts should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+func Test_LintTSPreset_Returns_TypeScript_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	// tsconfig.json and glob pattern for tsconfig.*.json
+	if !sliceContains(paths.Ro, "/home/user/project/tsconfig.json") {
+		t.Errorf("@lint/ts should include tsconfig.json in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/tsconfig.*.json") {
+		t.Errorf("@lint/ts should include tsconfig.*.json glob in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintTSPreset_Returns_EditorConfig_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/.editorconfig") {
+		t.Errorf("@lint/ts should include .editorconfig in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintTSPreset_Returns_No_RW_Or_Exclude_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@lint/ts should not return any rw paths, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@lint/ts should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_LintTSPreset_Ignores_Disabled_Map_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/ts": true,
+	}
+
+	paths := resolveLintTSPreset(ctx, disabled)
+
+	// Simple presets ignore disabled map
+	if len(paths.Ro) == 0 {
+		t.Error("@lint/ts should return ro paths even with disabled map")
+	}
+}
+
+func Test_LintTSPreset_Uses_Absolute_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintTSPreset(ctx, nil)
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+}
+
+// ============================================================================
+// @lint/go preset tests
+// ============================================================================
+
+func Test_LintGoPreset_Returns_Golangci_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintGoPreset(ctx, nil)
+
+	expectedFiles := []string{
+		"/home/user/project/.golangci.yml",
+		"/home/user/project/.golangci.yaml",
+		"/home/user/project/.golangci.toml",
+		"/home/user/project/.golangci.json",
+	}
+
+	for _, expected := range expectedFiles {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/go should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+func Test_LintGoPreset_Returns_EditorConfig_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintGoPreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/.editorconfig") {
+		t.Errorf("@lint/go should include .editorconfig in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintGoPreset_Returns_No_RW_Or_Exclude_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintGoPreset(ctx, nil)
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@lint/go should not return any rw paths, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@lint/go should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_LintGoPreset_Ignores_Disabled_Map_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/go": true,
+	}
+
+	paths := resolveLintGoPreset(ctx, disabled)
+
+	// Simple presets ignore disabled map
+	if len(paths.Ro) == 0 {
+		t.Error("@lint/go should return ro paths even with disabled map")
+	}
+}
+
+func Test_LintGoPreset_Uses_Absolute_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintGoPreset(ctx, nil)
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+}
+
+func Test_LintGoPreset_Returns_All_Expected_Configs_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/testuser",
+		WorkDir: "/home/testuser/myproject",
+	}
+
+	paths := resolveLintGoPreset(ctx, nil)
+
+	expectedRo := []string{
+		"/home/testuser/myproject/.golangci.yml",
+		"/home/testuser/myproject/.golangci.yaml",
+		"/home/testuser/myproject/.golangci.toml",
+		"/home/testuser/myproject/.golangci.json",
+		"/home/testuser/myproject/.editorconfig",
+	}
+
+	if len(paths.Ro) != len(expectedRo) {
+		t.Errorf("@lint/go should have exactly %d ro paths, got %d: %v",
+			len(expectedRo), len(paths.Ro), paths.Ro)
+	}
+
+	for _, expected := range expectedRo {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/go should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+// ============================================================================
+// @lint/python preset tests
+// ============================================================================
+
+func Test_LintPythonPreset_Returns_Pyproject_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/python should include pyproject.toml in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintPythonPreset_Returns_SetupCfg_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/setup.cfg") {
+		t.Errorf("@lint/python should include setup.cfg in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintPythonPreset_Returns_Flake8_Config_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/.flake8") {
+		t.Errorf("@lint/python should include .flake8 in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintPythonPreset_Returns_Mypy_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	expectedFiles := []string{
+		"/home/user/project/mypy.ini",
+		"/home/user/project/.mypy.ini",
+	}
+
+	for _, expected := range expectedFiles {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/python should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+func Test_LintPythonPreset_Returns_Pylint_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	expectedFiles := []string{
+		"/home/user/project/.pylintrc",
+		"/home/user/project/pylintrc",
+	}
+
+	for _, expected := range expectedFiles {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/python should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+func Test_LintPythonPreset_Returns_Ruff_Configs_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	expectedFiles := []string{
+		"/home/user/project/ruff.toml",
+		"/home/user/project/.ruff.toml",
+	}
+
+	for _, expected := range expectedFiles {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/python should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+func Test_LintPythonPreset_Returns_EditorConfig_As_ReadOnly_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/.editorconfig") {
+		t.Errorf("@lint/python should include .editorconfig in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintPythonPreset_Returns_No_RW_Or_Exclude_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@lint/python should not return any rw paths, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@lint/python should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_LintPythonPreset_Ignores_Disabled_Map_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/python": true,
+	}
+
+	paths := resolveLintPythonPreset(ctx, disabled)
+
+	// Simple presets ignore disabled map
+	if len(paths.Ro) == 0 {
+		t.Error("@lint/python should return ro paths even with disabled map")
+	}
+}
+
+func Test_LintPythonPreset_Uses_Absolute_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+}
+
+func Test_LintPythonPreset_Returns_All_Expected_Configs_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/testuser",
+		WorkDir: "/home/testuser/myproject",
+	}
+
+	paths := resolveLintPythonPreset(ctx, nil)
+
+	expectedRo := []string{
+		"/home/testuser/myproject/pyproject.toml",
+		"/home/testuser/myproject/setup.cfg",
+		"/home/testuser/myproject/.flake8",
+		"/home/testuser/myproject/mypy.ini",
+		"/home/testuser/myproject/.mypy.ini",
+		"/home/testuser/myproject/.pylintrc",
+		"/home/testuser/myproject/pylintrc",
+		"/home/testuser/myproject/ruff.toml",
+		"/home/testuser/myproject/.ruff.toml",
+		"/home/testuser/myproject/.editorconfig",
+	}
+
+	if len(paths.Ro) != len(expectedRo) {
+		t.Errorf("@lint/python should have exactly %d ro paths, got %d: %v",
+			len(expectedRo), len(paths.Ro), paths.Ro)
+	}
+
+	for _, expected := range expectedRo {
+		if !sliceContains(paths.Ro, expected) {
+			t.Errorf("@lint/python should include %q in ro paths, got: %v", expected, paths.Ro)
+		}
+	}
+}
+
+// ============================================================================
+// @lint/all preset tests
+// ============================================================================
+
+func Test_LintAllPreset_Combines_All_Lint_Presets_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintAllPreset(ctx, nil)
+
+	// Should include configs from all lint presets
+	// From @lint/ts
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@lint/all should include biome.json from @lint/ts, got: %v", paths.Ro)
+	}
+
+	// From @lint/go
+	if !sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("@lint/all should include .golangci.yml from @lint/go, got: %v", paths.Ro)
+	}
+
+	// From @lint/python
+	if !sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/all should include pyproject.toml from @lint/python, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintAllPreset_Respects_Disabled_LintTS_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/ts": true,
+	}
+
+	paths := resolveLintAllPreset(ctx, disabled)
+
+	// Should NOT include configs from @lint/ts
+	if sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@lint/all should NOT include biome.json when @lint/ts is disabled, got: %v", paths.Ro)
+	}
+
+	// Should still include configs from @lint/go and @lint/python
+	if !sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("@lint/all should include .golangci.yml from @lint/go, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/all should include pyproject.toml from @lint/python, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintAllPreset_Respects_Disabled_LintGo_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/go": true,
+	}
+
+	paths := resolveLintAllPreset(ctx, disabled)
+
+	// Should NOT include configs from @lint/go
+	if sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("@lint/all should NOT include .golangci.yml when @lint/go is disabled, got: %v", paths.Ro)
+	}
+
+	// Should still include configs from @lint/ts and @lint/python
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@lint/all should include biome.json from @lint/ts, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/all should include pyproject.toml from @lint/python, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintAllPreset_Respects_Disabled_LintPython_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/python": true,
+	}
+
+	paths := resolveLintAllPreset(ctx, disabled)
+
+	// Should NOT include configs from @lint/python
+	if sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@lint/all should NOT include pyproject.toml when @lint/python is disabled, got: %v", paths.Ro)
+	}
+
+	// Should still include configs from @lint/ts and @lint/go
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@lint/all should include biome.json from @lint/ts, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("@lint/all should include .golangci.yml from @lint/go, got: %v", paths.Ro)
+	}
+}
+
+func Test_LintAllPreset_Returns_Empty_When_All_Disabled(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/ts":     true,
+		"@lint/go":     true,
+		"@lint/python": true,
+	}
+
+	paths := resolveLintAllPreset(ctx, disabled)
+
+	if len(paths.Ro) != 0 {
+		t.Errorf("@lint/all should return empty ro paths when all lint presets are disabled, got: %v", paths.Ro)
+	}
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@lint/all should return empty rw paths when all lint presets are disabled, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@lint/all should return empty exclude paths when all lint presets are disabled, got: %v", paths.Exclude)
+	}
+}
+
+func Test_LintAllPreset_Returns_No_RW_Or_Exclude_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintAllPreset(ctx, nil)
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@lint/all should not return any rw paths, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@lint/all should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_LintAllPreset_Uses_Absolute_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveLintAllPreset(ctx, nil)
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+}
+
+// ============================================================================
+// @all preset tests
+// ============================================================================
+
+func Test_AllPreset_Combines_All_Presets_When_Called(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory for @git to work
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveAllPreset(ctx, nil)
+
+	// From @base: WorkDir should be writable
+	if !sliceContains(paths.Rw, tmpDir) {
+		t.Errorf("@all should include WorkDir from @base in rw paths, got: %v", paths.Rw)
+	}
+
+	// From @caches: ~/.cache should be writable
+	if !sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("@all should include ~/.cache from @caches in rw paths, got: %v", paths.Rw)
+	}
+
+	// From @git: .git/hooks should be read-only
+	expectedHooks := filepath.Join(gitDir, "hooks")
+	if !sliceContains(paths.Ro, expectedHooks) {
+		t.Errorf("@all should include .git/hooks from @git in ro paths, got: %v", paths.Ro)
+	}
+
+	// From @lint/all: lint configs should be read-only
+	if !sliceContains(paths.Ro, tmpDir+"/biome.json") {
+		t.Errorf("@all should include biome.json from @lint/all in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_AllPreset_Respects_Disabled_Base_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@base": true,
+	}
+
+	paths := resolveAllPreset(ctx, disabled)
+
+	// Should NOT include WorkDir from @base
+	if sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("@all should NOT include WorkDir when @base is disabled, got: %v", paths.Rw)
+	}
+
+	// Should still include configs from @caches
+	if !sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("@all should include ~/.cache from @caches, got: %v", paths.Rw)
+	}
+}
+
+func Test_AllPreset_Respects_Disabled_Caches_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@caches": true,
+	}
+
+	paths := resolveAllPreset(ctx, disabled)
+
+	// Should NOT include cache paths from @caches
+	if sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("@all should NOT include ~/.cache when @caches is disabled, got: %v", paths.Rw)
+	}
+
+	// Should still include WorkDir from @base
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("@all should include WorkDir from @base, got: %v", paths.Rw)
+	}
+}
+
+func Test_AllPreset_Respects_Disabled_Git_When_Called(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	disabled := map[string]bool{
+		"@git": true,
+	}
+
+	paths := resolveAllPreset(ctx, disabled)
+
+	// Should NOT include .git/hooks from @git
+	expectedHooks := filepath.Join(gitDir, "hooks")
+	if sliceContains(paths.Ro, expectedHooks) {
+		t.Errorf("@all should NOT include .git/hooks when @git is disabled, got: %v", paths.Ro)
+	}
+}
+
+func Test_AllPreset_Respects_Disabled_LintAll_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	disabled := map[string]bool{
+		"@lint/all": true,
+	}
+
+	paths := resolveAllPreset(ctx, disabled)
+
+	// Should NOT include lint configs from @lint/all
+	if sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@all should NOT include biome.json when @lint/all is disabled, got: %v", paths.Ro)
+	}
+
+	// Should still include base paths
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("@all should include WorkDir from @base, got: %v", paths.Rw)
+	}
+}
+
+func Test_AllPreset_Respects_Disabled_SubPreset_Of_LintAll_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// Disable a specific lint preset (not @lint/all itself)
+	disabled := map[string]bool{
+		"@lint/python": true,
+	}
+
+	paths := resolveAllPreset(ctx, disabled)
+
+	// Should NOT include Python lint configs
+	if sliceContains(paths.Ro, "/home/user/project/pyproject.toml") {
+		t.Errorf("@all should NOT include pyproject.toml when @lint/python is disabled, got: %v", paths.Ro)
+	}
+
+	// Should still include TS and Go lint configs
+	if !sliceContains(paths.Ro, "/home/user/project/biome.json") {
+		t.Errorf("@all should include biome.json from @lint/ts, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/.golangci.yml") {
+		t.Errorf("@all should include .golangci.yml from @lint/go, got: %v", paths.Ro)
+	}
+}
+
+func Test_AllPreset_Returns_Secrets_As_Excluded_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAllPreset(ctx, nil)
+
+	// From @base: secrets should be excluded
+	if !sliceContains(paths.Exclude, "/home/user/.ssh") {
+		t.Errorf("@all should include ~/.ssh in exclude paths from @base, got: %v", paths.Exclude)
+	}
+
+	if !sliceContains(paths.Exclude, "/home/user/.gnupg") {
+		t.Errorf("@all should include ~/.gnupg in exclude paths from @base, got: %v", paths.Exclude)
+	}
+
+	if !sliceContains(paths.Exclude, "/home/user/.aws") {
+		t.Errorf("@all should include ~/.aws in exclude paths from @base, got: %v", paths.Exclude)
+	}
+}
+
+func Test_AllPreset_Uses_Absolute_Paths_When_Called(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveAllPreset(ctx, nil)
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+
+	for _, p := range paths.Rw {
+		if p == "" || p[0] != '/' {
+			t.Errorf("rw path should be absolute: %q", p)
+		}
+	}
+
+	for _, p := range paths.Exclude {
+		if p == "" || p[0] != '/' {
+			t.Errorf("exclude path should be absolute: %q", p)
+		}
+	}
+}
