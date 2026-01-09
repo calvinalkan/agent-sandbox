@@ -775,53 +775,41 @@ func mustCreateExecutable(t *testing.T, path string) {
 }
 
 // ============================================================================
-// GenerateWrappers tests
+// GenerateWrappers tests - Content generation
 // ============================================================================
 
-func Test_GenerateWrappers_Creates_Temp_Directory(t *testing.T) {
+func Test_GenerateWrappers_Returns_Nil_When_No_Wrappers_Needed(t *testing.T) {
 	t.Parallel()
 
-	commands := map[string]CommandRule{
-		"git": {Kind: CommandRuleBlock},
-	}
+	// No commands configured
+	commands := map[string]CommandRule{}
+	binPaths := map[string][]BinaryPath{}
 
-	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	mustCreateDir(t, binDir)
-	mustCreateExecutable(t, filepath.Join(binDir, "git"))
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
 
-	binPaths := map[string][]BinaryPath{
-		"git": {{Path: filepath.Join(binDir, "git"), Resolved: filepath.Join(binDir, "git")}},
-	}
-
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
-	}
-
-	defer setup.Cleanup()
-
-	if setup.TempDir == "" {
-		t.Error("TempDir should not be empty")
-	}
-
-	// Verify temp directory exists
-	info, err := os.Stat(setup.TempDir)
-	if err != nil {
-		t.Fatalf("temp directory does not exist: %v", err)
-	}
-
-	if !info.IsDir() {
-		t.Error("TempDir should be a directory")
-	}
-
-	// Verify temp directory name pattern
-	if !strings.Contains(setup.TempDir, "agent-sandbox-wrappers-") {
-		t.Errorf("TempDir name should contain 'agent-sandbox-wrappers-', got %q", setup.TempDir)
+	if setup != nil {
+		t.Error("expected nil setup when no wrappers needed")
 	}
 }
 
-func Test_GenerateWrappers_Creates_Deny_Script_For_Blocked_Command(t *testing.T) {
+func Test_GenerateWrappers_Returns_Nil_When_Binary_Not_Found(t *testing.T) {
+	t.Parallel()
+
+	commands := map[string]CommandRule{
+		"notfound": {Kind: CommandRuleBlock},
+	}
+
+	// No binary paths provided
+	binPaths := map[string][]BinaryPath{}
+
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup != nil {
+		t.Error("expected nil setup when binary not found")
+	}
+}
+
+func Test_GenerateWrappers_Generates_Deny_Script_For_Blocked_Command(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
@@ -837,73 +825,43 @@ func Test_GenerateWrappers_Creates_Deny_Script_For_Blocked_Command(t *testing.T)
 		"rm": {{Path: filepath.Join(binDir, "rm"), Resolved: filepath.Join(binDir, "rm")}},
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	// Verify deny-binary script exists
-	denyScript := filepath.Join(setup.TempDir, "deny-binary")
-
-	content, err := os.ReadFile(denyScript)
-	if err != nil {
-		t.Fatalf("failed to read deny-binary script: %v", err)
+	// Should have one wrapper (deny script)
+	if len(setup.Wrappers) != 1 {
+		t.Fatalf("expected 1 wrapper, got %d", len(setup.Wrappers))
 	}
+
+	wrapper := setup.Wrappers[0]
 
 	// Verify script content
-	if !strings.Contains(string(content), "#!/bin/bash") {
-		t.Error("deny-binary should have bash shebang")
+	if !strings.Contains(wrapper.Script, "#!/bin/bash") {
+		t.Error("deny script should have bash shebang")
 	}
 
-	if !strings.Contains(string(content), "is blocked in this sandbox") {
-		t.Error("deny-binary should contain 'blocked' message")
+	if !strings.Contains(wrapper.Script, "is blocked in this sandbox") {
+		t.Error("deny script should contain 'blocked' message")
 	}
 
-	if !strings.Contains(string(content), "exit 1") {
-		t.Error("deny-binary should exit with code 1")
-	}
-}
-
-func Test_GenerateWrappers_Deny_Script_Is_Executable(t *testing.T) {
-	t.Parallel()
-
-	commands := map[string]CommandRule{
-		"rm": {Kind: CommandRuleBlock},
+	if !strings.Contains(wrapper.Script, "exit 1") {
+		t.Error("deny script should exit with code 1")
 	}
 
-	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	mustCreateDir(t, binDir)
-	mustCreateExecutable(t, filepath.Join(binDir, "rm"))
-
-	binPaths := map[string][]BinaryPath{
-		"rm": {{Path: filepath.Join(binDir, "rm"), Resolved: filepath.Join(binDir, "rm")}},
+	// Verify destination
+	if len(wrapper.Destinations) != 1 {
+		t.Fatalf("expected 1 destination, got %d", len(wrapper.Destinations))
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
-	}
-
-	defer setup.Cleanup()
-
-	denyScript := filepath.Join(setup.TempDir, "deny-binary")
-
-	info, err := os.Stat(denyScript)
-	if err != nil {
-		t.Fatalf("failed to stat deny-binary: %v", err)
-	}
-
-	// Check executable bit
-	mode := info.Mode().Perm()
-	if mode&0o111 == 0 {
-		t.Errorf("deny-binary should be executable, got mode %o", mode)
+	if wrapper.Destinations[0] != filepath.Join(binDir, "rm") {
+		t.Errorf("destination = %q, want %q", wrapper.Destinations[0], filepath.Join(binDir, "rm"))
 	}
 }
 
-func Test_GenerateWrappers_Creates_Preset_Wrapper_Script(t *testing.T) {
+func Test_GenerateWrappers_Generates_Preset_Wrapper_Script(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
@@ -921,48 +879,46 @@ func Test_GenerateWrappers_Creates_Preset_Wrapper_Script(t *testing.T) {
 
 	sandboxBinary := "/run/sandbox/agent-sandbox"
 
-	setup, err := GenerateWrappers(commands, binPaths, sandboxBinary)
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, sandboxBinary)
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	// Verify wrapper script exists
-	wrapperScript := filepath.Join(setup.TempDir, "wrap-git")
-
-	content, err := os.ReadFile(wrapperScript)
-	if err != nil {
-		t.Fatalf("failed to read wrapper script: %v", err)
+	// Should have one wrapper (preset wrapper)
+	if len(setup.Wrappers) != 1 {
+		t.Fatalf("expected 1 wrapper, got %d", len(setup.Wrappers))
 	}
+
+	wrapper := setup.Wrappers[0]
 
 	// Verify script content
-	if !strings.Contains(string(content), "#!/bin/bash") {
+	if !strings.Contains(wrapper.Script, "#!/bin/bash") {
 		t.Error("wrapper should have bash shebang")
 	}
 
-	if !strings.Contains(string(content), sandboxBinary) {
+	if !strings.Contains(wrapper.Script, sandboxBinary) {
 		t.Errorf("wrapper should call sandbox binary %q", sandboxBinary)
 	}
 
-	if !strings.Contains(string(content), "wrap-binary") {
+	if !strings.Contains(wrapper.Script, "wrap-binary") {
 		t.Error("wrapper should call wrap-binary subcommand")
 	}
 
-	if !strings.Contains(string(content), "--preset") {
+	if !strings.Contains(wrapper.Script, "--preset") {
 		t.Error("wrapper should use --preset flag")
 	}
 
-	if !strings.Contains(string(content), "@git") {
+	if !strings.Contains(wrapper.Script, "@git") {
 		t.Error("wrapper should include preset name @git")
 	}
 
-	if !strings.Contains(string(content), `"$@"`) {
+	if !strings.Contains(wrapper.Script, `"$@"`) {
 		t.Error("wrapper should pass through arguments with \"$@\"")
 	}
 }
 
-func Test_GenerateWrappers_Creates_Custom_Wrapper_Script(t *testing.T) {
+func Test_GenerateWrappers_Generates_Custom_Wrapper_Script(t *testing.T) {
 	t.Parallel()
 
 	userScript := "/home/user/.config/agent-sandbox/npm-wrapper.sh"
@@ -981,48 +937,46 @@ func Test_GenerateWrappers_Creates_Custom_Wrapper_Script(t *testing.T) {
 
 	sandboxBinary := "/run/sandbox/agent-sandbox"
 
-	setup, err := GenerateWrappers(commands, binPaths, sandboxBinary)
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, sandboxBinary)
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	// Verify wrapper script exists
-	wrapperScript := filepath.Join(setup.TempDir, "wrap-npm")
-
-	content, err := os.ReadFile(wrapperScript)
-	if err != nil {
-		t.Fatalf("failed to read wrapper script: %v", err)
+	// Should have one wrapper (custom wrapper)
+	if len(setup.Wrappers) != 1 {
+		t.Fatalf("expected 1 wrapper, got %d", len(setup.Wrappers))
 	}
+
+	wrapper := setup.Wrappers[0]
 
 	// Verify script content
-	if !strings.Contains(string(content), "#!/bin/bash") {
+	if !strings.Contains(wrapper.Script, "#!/bin/bash") {
 		t.Error("wrapper should have bash shebang")
 	}
 
-	if !strings.Contains(string(content), sandboxBinary) {
+	if !strings.Contains(wrapper.Script, sandboxBinary) {
 		t.Errorf("wrapper should call sandbox binary %q", sandboxBinary)
 	}
 
-	if !strings.Contains(string(content), "wrap-binary") {
+	if !strings.Contains(wrapper.Script, "wrap-binary") {
 		t.Error("wrapper should call wrap-binary subcommand")
 	}
 
-	if !strings.Contains(string(content), "--script") {
+	if !strings.Contains(wrapper.Script, "--script") {
 		t.Error("wrapper should use --script flag")
 	}
 
-	if !strings.Contains(string(content), userScript) {
+	if !strings.Contains(wrapper.Script, userScript) {
 		t.Errorf("wrapper should include user script path %q", userScript)
 	}
 
-	if !strings.Contains(string(content), `"$@"`) {
+	if !strings.Contains(wrapper.Script, `"$@"`) {
 		t.Error("wrapper should pass through arguments with \"$@\"")
 	}
 }
 
-func Test_GenerateWrappers_Raw_Rule_Adds_No_Mounts(t *testing.T) {
+func Test_GenerateWrappers_Raw_Rule_Adds_No_Wrappers(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
@@ -1038,20 +992,15 @@ func Test_GenerateWrappers_Raw_Rule_Adds_No_Mounts(t *testing.T) {
 		"git": {{Path: filepath.Join(binDir, "git"), Resolved: filepath.Join(binDir, "git")}},
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
-	}
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
 
-	defer setup.Cleanup()
-
-	// Raw rule should not add any mounts
-	if len(setup.Mounts) != 0 {
-		t.Errorf("raw rule should add no mounts, got %d", len(setup.Mounts))
+	// Raw rule should result in nil setup (no wrappers)
+	if setup != nil {
+		t.Error("expected nil setup for raw rule only")
 	}
 }
 
-func Test_GenerateWrappers_Block_Rule_Mounts_Deny_Script_At_All_Locations(t *testing.T) {
+func Test_GenerateWrappers_Block_Rule_Adds_All_Destinations(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
@@ -1074,43 +1023,46 @@ func Test_GenerateWrappers_Block_Rule_Mounts_Deny_Script_At_All_Locations(t *tes
 		},
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	// Should have two mounts (one for each binary location)
-	if len(setup.Mounts) != 2 {
-		t.Fatalf("expected 2 mounts, got %d", len(setup.Mounts))
+	// Should have one wrapper with two destinations
+	if len(setup.Wrappers) != 1 {
+		t.Fatalf("expected 1 wrapper, got %d", len(setup.Wrappers))
 	}
 
-	// Both should use the same deny-binary source
-	denyScript := filepath.Join(setup.TempDir, "deny-binary")
-
-	for i, mount := range setup.Mounts {
-		if mount.Source != denyScript {
-			t.Errorf("mount[%d].Source = %q, want %q", i, mount.Source, denyScript)
-		}
+	if len(setup.Wrappers[0].Destinations) != 2 {
+		t.Fatalf("expected 2 destinations, got %d", len(setup.Wrappers[0].Destinations))
 	}
 
 	// Check destinations
-	destinations := make(map[string]bool)
-	for _, mount := range setup.Mounts {
-		destinations[mount.Destination] = true
+	dests := setup.Wrappers[0].Destinations
+	hasPath1 := false
+	hasPath2 := false
+
+	for _, d := range dests {
+		if d == filepath.Join(bin1, "rm") {
+			hasPath1 = true
+		}
+
+		if d == filepath.Join(bin2, "rm") {
+			hasPath2 = true
+		}
 	}
 
-	if !destinations[filepath.Join(bin1, "rm")] {
-		t.Error("missing mount for bin1/rm")
+	if !hasPath1 {
+		t.Error("missing destination for bin1/rm")
 	}
 
-	if !destinations[filepath.Join(bin2, "rm")] {
-		t.Error("missing mount for bin2/rm")
+	if !hasPath2 {
+		t.Error("missing destination for bin2/rm")
 	}
 }
 
-func Test_GenerateWrappers_Preset_Rule_Mounts_At_All_Locations(t *testing.T) {
+func Test_GenerateWrappers_Preset_Rule_Adds_All_Destinations(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
@@ -1133,127 +1085,23 @@ func Test_GenerateWrappers_Preset_Rule_Mounts_At_All_Locations(t *testing.T) {
 		},
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	// Should have two mounts
-	if len(setup.Mounts) != 2 {
-		t.Fatalf("expected 2 mounts, got %d", len(setup.Mounts))
+	// Should have one wrapper with two destinations
+	if len(setup.Wrappers) != 1 {
+		t.Fatalf("expected 1 wrapper, got %d", len(setup.Wrappers))
 	}
 
-	// Both should use the same wrapper script
-	wrapperScript := filepath.Join(setup.TempDir, "wrap-git")
-
-	for i, mount := range setup.Mounts {
-		if mount.Source != wrapperScript {
-			t.Errorf("mount[%d].Source = %q, want %q", i, mount.Source, wrapperScript)
-		}
+	if len(setup.Wrappers[0].Destinations) != 2 {
+		t.Fatalf("expected 2 destinations, got %d", len(setup.Wrappers[0].Destinations))
 	}
 }
 
-func Test_GenerateWrappers_Cleanup_Removes_Temp_Directory(t *testing.T) {
-	t.Parallel()
-
-	commands := map[string]CommandRule{
-		"rm": {Kind: CommandRuleBlock},
-	}
-
-	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	mustCreateDir(t, binDir)
-	mustCreateExecutable(t, filepath.Join(binDir, "rm"))
-
-	binPaths := map[string][]BinaryPath{
-		"rm": {{Path: filepath.Join(binDir, "rm"), Resolved: filepath.Join(binDir, "rm")}},
-	}
-
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
-	}
-
-	tempDir := setup.TempDir
-
-	// Verify temp dir exists before cleanup
-	_, err = os.Stat(tempDir)
-	if err != nil {
-		t.Fatalf("temp dir should exist before cleanup: %v", err)
-	}
-
-	// Call cleanup
-	setup.Cleanup()
-
-	// Verify temp dir is removed
-	_, err = os.Stat(tempDir)
-	if !os.IsNotExist(err) {
-		t.Errorf("temp dir should not exist after cleanup, err = %v", err)
-	}
-}
-
-func Test_GenerateWrappers_Skips_Command_When_Binary_Not_Found(t *testing.T) {
-	t.Parallel()
-
-	commands := map[string]CommandRule{
-		"rm":       {Kind: CommandRuleBlock},
-		"npm":      {Kind: CommandRuleScript, Value: "/path/to/script"},
-		"notfound": {Kind: CommandRulePreset, Value: "@preset"},
-	}
-
-	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	mustCreateDir(t, binDir)
-	mustCreateExecutable(t, filepath.Join(binDir, "rm"))
-	mustCreateExecutable(t, filepath.Join(binDir, "npm"))
-	// Don't create "notfound" binary
-
-	binPaths := map[string][]BinaryPath{
-		"rm":  {{Path: filepath.Join(binDir, "rm"), Resolved: filepath.Join(binDir, "rm")}},
-		"npm": {{Path: filepath.Join(binDir, "npm"), Resolved: filepath.Join(binDir, "npm")}},
-		// No entry for "notfound"
-	}
-
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
-	}
-
-	defer setup.Cleanup()
-
-	// Should have 2 mounts (rm and npm), not 3
-	if len(setup.Mounts) != 2 {
-		t.Errorf("expected 2 mounts (skipping notfound), got %d", len(setup.Mounts))
-	}
-}
-
-func Test_GenerateWrappers_Skips_Empty_Binary_Paths(t *testing.T) {
-	t.Parallel()
-
-	commands := map[string]CommandRule{
-		"rm": {Kind: CommandRuleBlock},
-	}
-
-	binPaths := map[string][]BinaryPath{
-		"rm": {}, // Empty slice
-	}
-
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
-	}
-
-	defer setup.Cleanup()
-
-	// Should have no mounts
-	if len(setup.Mounts) != 0 {
-		t.Errorf("expected 0 mounts for empty binary paths, got %d", len(setup.Mounts))
-	}
-}
-
-func Test_GenerateWrappers_Unset_Rule_Adds_No_Mounts(t *testing.T) {
+func Test_GenerateWrappers_Unset_Rule_Adds_No_Wrappers(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
@@ -1269,16 +1117,11 @@ func Test_GenerateWrappers_Unset_Rule_Adds_No_Mounts(t *testing.T) {
 		"git": {{Path: filepath.Join(binDir, "git"), Resolved: filepath.Join(binDir, "git")}},
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
-	}
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
 
-	defer setup.Cleanup()
-
-	// Unset rule should not add any mounts
-	if len(setup.Mounts) != 0 {
-		t.Errorf("unset rule should add no mounts, got %d", len(setup.Mounts))
+	// Unset rule should result in nil setup (no wrappers)
+	if setup != nil {
+		t.Error("expected nil setup for unset rule only")
 	}
 }
 
@@ -1307,87 +1150,92 @@ func Test_GenerateWrappers_Multiple_Commands(t *testing.T) {
 		"go":  {{Path: filepath.Join(binDir, "go"), Resolved: filepath.Join(binDir, "go")}},
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	// rm (block) + git (preset) + npm (script) = 3 mounts
-	// go (raw) = 0 mounts
-	if len(setup.Mounts) != 3 {
-		t.Errorf("expected 3 mounts, got %d", len(setup.Mounts))
+	// rm (block) + git (preset) + npm (script) = 3 wrappers
+	// go (raw) = 0 wrappers
+	if len(setup.Wrappers) != 3 {
+		t.Errorf("expected 3 wrappers, got %d", len(setup.Wrappers))
 	}
 
-	// Verify scripts exist
-	denyScript := filepath.Join(setup.TempDir, "deny-binary")
-	gitWrapper := filepath.Join(setup.TempDir, "wrap-git")
-	npmWrapper := filepath.Join(setup.TempDir, "wrap-npm")
-
-	for _, script := range []string{denyScript, gitWrapper, npmWrapper} {
-		_, statErr := os.Stat(script)
-		if statErr != nil {
-			t.Errorf("script %q should exist: %v", script, statErr)
-		}
+	// Verify real binaries are tracked for git and npm (preset/script wrappers)
+	if _, ok := setup.RealBinaries["git"]; !ok {
+		t.Error("expected git in RealBinaries")
 	}
 
-	// Verify no go wrapper exists
-	goWrapper := filepath.Join(setup.TempDir, "wrap-go")
-	_, statErr := os.Stat(goWrapper)
+	if _, ok := setup.RealBinaries["npm"]; !ok {
+		t.Error("expected npm in RealBinaries")
+	}
 
-	if !os.IsNotExist(statErr) {
-		t.Errorf("go wrapper should not exist (raw rule)")
+	// rm (block) should not be in RealBinaries (no real binary needed)
+	if _, ok := setup.RealBinaries["rm"]; ok {
+		t.Error("rm should not be in RealBinaries (block rule)")
+	}
+
+	// go (raw) should not be in RealBinaries
+	if _, ok := setup.RealBinaries["go"]; ok {
+		t.Error("go should not be in RealBinaries (raw rule)")
 	}
 }
 
-func Test_GenerateWrappers_Wrapper_Scripts_Are_Executable(t *testing.T) {
+func Test_GenerateWrappers_Skips_Command_When_Binary_Not_Found(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
-		"git": {Kind: CommandRulePreset, Value: "@git"},
-		"npm": {Kind: CommandRuleScript, Value: "/path/to/script"},
+		"rm":       {Kind: CommandRuleBlock},
+		"npm":      {Kind: CommandRuleScript, Value: "/path/to/script"},
+		"notfound": {Kind: CommandRulePreset, Value: "@preset"},
 	}
 
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "bin")
 	mustCreateDir(t, binDir)
-	mustCreateExecutable(t, filepath.Join(binDir, "git"))
+	mustCreateExecutable(t, filepath.Join(binDir, "rm"))
 	mustCreateExecutable(t, filepath.Join(binDir, "npm"))
+	// Don't create "notfound" binary
 
 	binPaths := map[string][]BinaryPath{
-		"git": {{Path: filepath.Join(binDir, "git"), Resolved: filepath.Join(binDir, "git")}},
+		"rm":  {{Path: filepath.Join(binDir, "rm"), Resolved: filepath.Join(binDir, "rm")}},
 		"npm": {{Path: filepath.Join(binDir, "npm"), Resolved: filepath.Join(binDir, "npm")}},
+		// No entry for "notfound"
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	// Check all wrapper scripts are executable
-	scripts := []string{
-		filepath.Join(setup.TempDir, "deny-binary"),
-		filepath.Join(setup.TempDir, "wrap-git"),
-		filepath.Join(setup.TempDir, "wrap-npm"),
-	}
-
-	for _, script := range scripts {
-		info, err := os.Stat(script)
-		if err != nil {
-			t.Fatalf("failed to stat %q: %v", script, err)
-		}
-
-		mode := info.Mode().Perm()
-		if mode&0o111 == 0 {
-			t.Errorf("script %q should be executable, got mode %o", script, mode)
-		}
+	// Should have 2 wrappers (rm and npm), not 3
+	if len(setup.Wrappers) != 2 {
+		t.Errorf("expected 2 wrappers (skipping notfound), got %d", len(setup.Wrappers))
 	}
 }
 
-func Test_GenerateWrappers_Preset_Wrapper_No_PATH_Lookup(t *testing.T) {
+func Test_GenerateWrappers_Skips_Empty_Binary_Paths(t *testing.T) {
+	t.Parallel()
+
+	commands := map[string]CommandRule{
+		"rm": {Kind: CommandRuleBlock},
+	}
+
+	binPaths := map[string][]BinaryPath{
+		"rm": {}, // Empty slice
+	}
+
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	// Should be nil (no wrappers)
+	if setup != nil {
+		t.Error("expected nil setup for empty binary paths")
+	}
+}
+
+func Test_GenerateWrappers_Preset_Wrapper_Uses_Full_Path(t *testing.T) {
 	t.Parallel()
 
 	commands := map[string]CommandRule{
@@ -1406,27 +1254,19 @@ func Test_GenerateWrappers_Preset_Wrapper_No_PATH_Lookup(t *testing.T) {
 	// Use a path with special characters to verify proper quoting
 	sandboxBinary := "/run/abc123/agent-sandbox"
 
-	setup, err := GenerateWrappers(commands, binPaths, sandboxBinary)
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, sandboxBinary)
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	wrapperScript := filepath.Join(setup.TempDir, "wrap-git")
-
-	content, err := os.ReadFile(wrapperScript)
-	if err != nil {
-		t.Fatalf("failed to read wrapper script: %v", err)
-	}
+	wrapper := setup.Wrappers[0]
 
 	// Wrapper should NOT use PATH lookup (no bare "agent-sandbox")
 	// It should use the full path to the sandbox binary
-	scriptContent := string(content)
-
 	// Should contain the exec line with full path
-	if !strings.Contains(scriptContent, "exec \""+sandboxBinary+"\"") {
-		t.Errorf("wrapper should exec sandbox binary with full path, got:\n%s", scriptContent)
+	if !strings.Contains(wrapper.Script, "exec \""+sandboxBinary+"\"") {
+		t.Errorf("wrapper should exec sandbox binary with full path, got:\n%s", wrapper.Script)
 	}
 }
 
@@ -1448,22 +1288,92 @@ func Test_GenerateWrappers_Custom_Wrapper_Quotes_Script_Path(t *testing.T) {
 		"npm": {{Path: filepath.Join(binDir, "npm"), Resolved: filepath.Join(binDir, "npm")}},
 	}
 
-	setup, err := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
-	if err != nil {
-		t.Fatalf("GenerateWrappers failed: %v", err)
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
 	}
 
-	defer setup.Cleanup()
-
-	wrapperScript := filepath.Join(setup.TempDir, "wrap-npm")
-
-	content, err := os.ReadFile(wrapperScript)
-	if err != nil {
-		t.Fatalf("failed to read wrapper script: %v", err)
-	}
+	wrapper := setup.Wrappers[0]
 
 	// Script path should be quoted
-	if !strings.Contains(string(content), "\""+userScript+"\"") {
-		t.Errorf("wrapper should quote script path, got:\n%s", string(content))
+	if !strings.Contains(wrapper.Script, "\""+userScript+"\"") {
+		t.Errorf("wrapper should quote script path, got:\n%s", wrapper.Script)
+	}
+}
+
+func Test_GenerateWrappers_Tracks_Real_Binaries_For_Preset(t *testing.T) {
+	t.Parallel()
+
+	commands := map[string]CommandRule{
+		"git": {Kind: CommandRulePreset, Value: "@git"},
+	}
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	mustCreateDir(t, binDir)
+	mustCreateExecutable(t, filepath.Join(binDir, "git"))
+
+	gitPath := filepath.Join(binDir, "git")
+	binPaths := map[string][]BinaryPath{
+		"git": {{Path: gitPath, Resolved: gitPath}},
+	}
+
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
+	}
+
+	// Should track real binary for git
+	realBins, ok := setup.RealBinaries["git"]
+	if !ok {
+		t.Fatal("expected git in RealBinaries")
+	}
+
+	if len(realBins) != 1 {
+		t.Fatalf("expected 1 real binary, got %d", len(realBins))
+	}
+
+	if realBins[0].Path != gitPath {
+		t.Errorf("real binary path = %q, want %q", realBins[0].Path, gitPath)
+	}
+}
+
+func Test_GenerateWrappers_Tracks_Real_Binaries_For_Custom_Script(t *testing.T) {
+	t.Parallel()
+
+	commands := map[string]CommandRule{
+		"npm": {Kind: CommandRuleScript, Value: "/path/to/script"},
+	}
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	mustCreateDir(t, binDir)
+	mustCreateExecutable(t, filepath.Join(binDir, "npm"))
+
+	npmPath := filepath.Join(binDir, "npm")
+	binPaths := map[string][]BinaryPath{
+		"npm": {{Path: npmPath, Resolved: npmPath}},
+	}
+
+	setup := GenerateWrappers(commands, binPaths, "/usr/bin/agent-sandbox")
+
+	if setup == nil {
+		t.Fatal("expected non-nil setup")
+	}
+
+	// Should track real binary for npm
+	realBins, ok := setup.RealBinaries["npm"]
+	if !ok {
+		t.Fatal("expected npm in RealBinaries")
+	}
+
+	if len(realBins) != 1 {
+		t.Fatalf("expected 1 real binary, got %d", len(realBins))
+	}
+
+	if realBins[0].Path != npmPath {
+		t.Errorf("real binary path = %q, want %q", realBins[0].Path, npmPath)
 	}
 }

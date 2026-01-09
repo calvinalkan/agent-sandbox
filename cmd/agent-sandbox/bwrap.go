@@ -299,7 +299,7 @@ func selfBinaryArgs() ([]string, error) {
 	return []string{"--ro-bind", self, SandboxBinaryPath}, nil
 }
 
-// AddWrapperMounts generates bwrap arguments to mount command wrappers into the sandbox.
+// AddWrapperMounts generates bwrap arguments to mount real binaries for command wrappers.
 //
 // Directory structure inside sandbox (where runtimeBase is e.g. /run/abc123/agent-sandbox):
 //
@@ -309,7 +309,8 @@ func selfBinaryArgs() ([]string, error) {
 //	    ├── git              # real git binary
 //	    └── npm              # real npm binary
 //
-// The wrapper scripts (in wrapperSetup.Mounts) are mounted over the original binary locations.
+// The wrapper scripts themselves are injected via FD-based mounting (--ro-bind-data)
+// in ExecuteSandbox. This function only handles the real binary mounts.
 // The wrap-binary command finds real binaries via path convention: ../real/<cmdName>.
 //
 // Returns the args slice with wrapper mounts appended.
@@ -328,23 +329,27 @@ func AddWrapperMounts(args []string, wrapperSetup *WrapperSetup, selfBinary stri
 	sandboxWrapBinaryPath := filepath.Join(binDir, "wrap-binary")
 	args = append(args, "--ro-bind", selfBinary, sandboxWrapBinaryPath)
 
-	// Mount real binaries
-	for cmdName, paths := range wrapperSetup.RealBinaries {
-		if len(paths) == 0 {
-			continue
+	// Check if we're already inside a sandbox (nested sandbox case)
+	// In nested sandboxes, the outer sandbox's wrappers are already in place,
+	// and the paths we see might not be accessible to the inner bwrap.
+	insideSandbox := isInsideSandbox()
+
+	// Mount real binaries (only if not nested, since outer sandbox handles this)
+	if !insideSandbox {
+		for cmdName, paths := range wrapperSetup.RealBinaries {
+			if len(paths) == 0 {
+				continue
+			}
+
+			// Use the first resolved path as the canonical real binary
+			realPath := paths[0].Resolved
+			destPath := filepath.Join(realDir, cmdName)
+			args = append(args, "--ro-bind", realPath, destPath)
 		}
-
-		// Use the first resolved path as the canonical real binary
-		realPath := paths[0].Resolved
-		destPath := filepath.Join(realDir, cmdName)
-		args = append(args, "--ro-bind", realPath, destPath)
 	}
 
-	// Mount wrapper scripts over original locations
-	for _, mount := range wrapperSetup.Mounts {
-		// Mount read-only so sandboxed processes cannot tamper with wrapper behavior.
-		args = append(args, "--ro-bind", mount.Source, mount.Destination)
-	}
+	// Note: Wrapper scripts are NOT mounted here anymore.
+	// They are injected via FD-based mounting (--ro-bind-data) in ExecuteSandbox.
 
 	return args
 }

@@ -196,14 +196,9 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 			sandboxWrapBinaryPath := filepath.Join(runtimeBase, "binaries", "wrap-binary")
 
 			// Generate wrapper scripts
-			wrapperSetup, err := GenerateWrappers(cfg.Commands, binPaths, sandboxWrapBinaryPath)
-			if err != nil {
-				return err
-			}
+			wrapperSetup := GenerateWrappers(cfg.Commands, binPaths, sandboxWrapBinaryPath)
 
-			if wrapperSetup != nil {
-				defer wrapperSetup.Cleanup()
-			}
+			// Note: No cleanup needed - wrappers are injected via FDs (--ro-bind-data)
 
 			// 16. Get self binary path for mounting into sandbox
 			selfBinary, err := getSelfBinaryPath()
@@ -226,7 +221,7 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 			}
 
 			// 19. Execute the command in the sandbox
-			exitCode, err := ExecuteSandbox(ctx, bwrapArgs, args, env, stdin, stdout, stderr)
+			exitCode, err := ExecuteSandbox(ctx, bwrapArgs, args, env, wrapperSetup, stdin, stdout, stderr)
 			if err != nil {
 				return err
 			}

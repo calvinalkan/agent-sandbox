@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // BinaryPath represents a single location where a binary was found.
@@ -154,46 +153,33 @@ func isExecutable(info os.FileInfo) bool {
 	return false
 }
 
-// WrapperSetup contains the temp directory and mount info for wrappers.
+// WrapperContent describes a wrapper script to be injected via FD.
+type WrapperContent struct {
+	Script       string   // Bash script content
+	Destinations []string // Mount destinations (all binary locations)
+}
+
+// WrapperSetup contains generated wrapper content for FD-based injection.
+// No temp files are created - scripts are injected via --ro-bind-data.
 type WrapperSetup struct {
-	TempDir      string                  // Host temp directory
-	Mounts       []WrapperMount          // Mounts to add to bwrap
+	Wrappers     []WrapperContent        // All wrapper scripts to inject
 	RealBinaries map[string][]BinaryPath // Command name -> binary locations for mounting real binaries
-	Cleanup      func()                  // Call to remove temp dir
 }
 
-// WrapperMount describes a single mount for a wrapper script.
-type WrapperMount struct {
-	Source      string // Path on host (in temp dir)
-	Destination string // Path in sandbox (original binary location)
-}
-
-// GenerateWrappers creates wrapper scripts for all configured commands.
-// Returns a WrapperSetup containing temp dir, mounts, and cleanup function.
-// The caller must call Cleanup() after bwrap exits to remove the temp directory.
+// GenerateWrappers creates wrapper content for all configured commands.
+// Returns nil if no wrappers are needed.
+//
+// The returned WrapperSetup contains script content that will be injected
+// via bwrap's --ro-bind-data option. No temp files are created.
 //
 // sandboxWrapBinaryPath is the absolute path to the agent-sandbox binary inside the sandbox.
-func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]BinaryPath, sandboxWrapBinaryPath string) (*WrapperSetup, error) {
-	tempDir, err := os.MkdirTemp("", "agent-sandbox-wrappers-")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp directory for wrappers: %w", err)
-	}
-
+func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]BinaryPath, sandboxWrapBinaryPath string) *WrapperSetup {
 	setup := &WrapperSetup{
-		TempDir:      tempDir,
 		RealBinaries: make(map[string][]BinaryPath),
-		Cleanup:      func() { _ = os.RemoveAll(tempDir) },
 	}
 
-	// Create deny-binary script (shared by all blocked commands)
-	denyScript := filepath.Join(tempDir, "deny-binary")
-
-	err = writeDenyScript(denyScript)
-	if err != nil {
-		setup.Cleanup()
-
-		return nil, fmt.Errorf("creating deny script: %w", err)
-	}
+	// Collect destinations for deny script (all blocked commands share one script)
+	var denyDestinations []string
 
 	for cmdName, rule := range commands {
 		paths, ok := binPaths[cmdName]
@@ -203,12 +189,9 @@ func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]Bin
 
 		switch rule.Kind {
 		case CommandRuleBlock:
-			// Block: mount deny-binary at all locations
+			// Block: collect destinations for shared deny script
 			for _, p := range paths {
-				setup.Mounts = append(setup.Mounts, WrapperMount{
-					Source:      denyScript,
-					Destination: p.Path,
-				})
+				denyDestinations = append(denyDestinations, p.Path)
 			}
 
 		case CommandRuleRaw:
@@ -216,42 +199,34 @@ func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]Bin
 
 		case CommandRulePreset:
 			// Preset wrapper
-			wrapperScript := filepath.Join(tempDir, "wrap-"+cmdName)
-
-			err = writePresetWrapper(wrapperScript, sandboxWrapBinaryPath, cmdName, rule.Value)
-			if err != nil {
-				setup.Cleanup()
-
-				return nil, fmt.Errorf("creating preset wrapper for %s: %w", cmdName, err)
-			}
+			script := generatePresetWrapper(sandboxWrapBinaryPath, cmdName, rule.Value)
+			destinations := make([]string, 0, len(paths))
 
 			for _, p := range paths {
-				setup.Mounts = append(setup.Mounts, WrapperMount{
-					Source:      wrapperScript,
-					Destination: p.Path,
-				})
+				destinations = append(destinations, p.Path)
 			}
+
+			setup.Wrappers = append(setup.Wrappers, WrapperContent{
+				Script:       script,
+				Destinations: destinations,
+			})
 
 			// Track real binary locations for mounting
 			setup.RealBinaries[cmdName] = paths
 
 		case CommandRuleScript:
 			// Custom script wrapper
-			wrapperScript := filepath.Join(tempDir, "wrap-"+cmdName)
-
-			err = writeCustomWrapper(wrapperScript, sandboxWrapBinaryPath, cmdName, rule.Value)
-			if err != nil {
-				setup.Cleanup()
-
-				return nil, fmt.Errorf("creating custom wrapper for %s: %w", cmdName, err)
-			}
+			script := generateCustomWrapper(sandboxWrapBinaryPath, cmdName, rule.Value)
+			destinations := make([]string, 0, len(paths))
 
 			for _, p := range paths {
-				setup.Mounts = append(setup.Mounts, WrapperMount{
-					Source:      wrapperScript,
-					Destination: p.Path,
-				})
+				destinations = append(destinations, p.Path)
 			}
+
+			setup.Wrappers = append(setup.Wrappers, WrapperContent{
+				Script:       script,
+				Destinations: destinations,
+			})
 
 			// Track real binary locations for mounting
 			setup.RealBinaries[cmdName] = paths
@@ -261,56 +236,43 @@ func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]Bin
 		}
 	}
 
-	return setup, nil
+	// Add deny script if any commands are blocked
+	if len(denyDestinations) > 0 {
+		setup.Wrappers = append(setup.Wrappers, WrapperContent{
+			Script:       generateDenyScript(),
+			Destinations: denyDestinations,
+		})
+	}
+
+	// Return nil if no wrappers needed
+	if len(setup.Wrappers) == 0 && len(setup.RealBinaries) == 0 {
+		return nil
+	}
+
+	return setup
 }
 
-// writeDenyScript creates the deny-binary script that blocks command execution.
+// generateDenyScript creates the deny-binary script content.
 // The script uses $0 to determine which command was blocked.
-func writeDenyScript(path string) error {
-	script := `#!/bin/bash
+func generateDenyScript() string {
+	return `#!/bin/bash
 echo "command '$(basename "$0")' is blocked in this sandbox" >&2
 exit 1
 `
-
-	return writeExecutableScript(path, script)
 }
 
-// writePresetWrapper creates a wrapper script for a built-in preset.
+// generatePresetWrapper creates a wrapper script for a built-in preset.
 // The script execs wrap-binary with --preset flag.
-func writePresetWrapper(path, sandboxWrapBinaryPath, cmdName, presetName string) error {
-	script := fmt.Sprintf(`#!/bin/bash
+func generatePresetWrapper(sandboxWrapBinaryPath, cmdName, presetName string) string {
+	return fmt.Sprintf(`#!/bin/bash
 exec %q wrap-binary --preset %q %s "$@"
 `, sandboxWrapBinaryPath, presetName, cmdName)
-
-	return writeExecutableScript(path, script)
 }
 
-// writeCustomWrapper creates a wrapper script for a custom user script.
+// generateCustomWrapper creates a wrapper script for a custom user script.
 // The script execs wrap-binary with --script flag.
-func writeCustomWrapper(path, sandboxWrapBinaryPath, cmdName, scriptPath string) error {
-	script := fmt.Sprintf(`#!/bin/bash
+func generateCustomWrapper(sandboxWrapBinaryPath, cmdName, scriptPath string) string {
+	return fmt.Sprintf(`#!/bin/bash
 exec %q wrap-binary --script %q %s "$@"
 `, sandboxWrapBinaryPath, scriptPath, cmdName)
-
-	return writeExecutableScript(path, script)
-}
-
-// writeExecutableScript writes a script to path with executable permissions.
-// Creates with restricted permissions first, then chmod to add execute bit.
-// Uses syscall.Chmod to set permissions (gosec doesn't track syscall).
-func writeExecutableScript(path, content string) error {
-	// Write with restricted permissions first
-	err := os.WriteFile(path, []byte(content), 0o600)
-	if err != nil {
-		return fmt.Errorf("writing script %s: %w", path, err)
-	}
-
-	// Then add executable permission using syscall
-	// (wrapper scripts must be executable to function)
-	err = syscall.Chmod(path, 0o755)
-	if err != nil {
-		return fmt.Errorf("setting permissions on %s: %w", path, err)
-	}
-
-	return nil
 }

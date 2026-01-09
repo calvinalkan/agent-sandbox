@@ -412,6 +412,165 @@ while true; do sleep 1; done
 }
 
 // ============================================================================
+// PrepareWrapperFDs tests - FD-based wrapper injection
+// ============================================================================
+
+func Test_PrepareWrapperFDs_Returns_Empty_When_Setup_Is_Nil(t *testing.T) {
+	t.Parallel()
+
+	fds, err := PrepareWrapperFDs(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fds == nil {
+		t.Fatal("expected non-nil fds (empty struct)")
+	}
+
+	if len(fds.Files) != 0 || len(fds.Args) != 0 {
+		t.Errorf("expected empty fds for nil setup, got %d files and %d args", len(fds.Files), len(fds.Args))
+	}
+}
+
+func Test_PrepareWrapperFDs_Returns_Empty_When_No_Wrappers(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		Wrappers: []WrapperContent{}, // Empty
+	}
+
+	fds, err := PrepareWrapperFDs(setup)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fds == nil {
+		t.Fatal("expected non-nil fds (empty struct)")
+	}
+
+	if len(fds.Files) != 0 || len(fds.Args) != 0 {
+		t.Errorf("expected empty fds for empty wrappers, got %d files and %d args", len(fds.Files), len(fds.Args))
+	}
+}
+
+func Test_PrepareWrapperFDs_Creates_File_Descriptors(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		Wrappers: []WrapperContent{
+			{
+				Script:       "#!/bin/bash\necho hello\n",
+				Destinations: []string{"/usr/bin/test1"},
+			},
+		},
+	}
+
+	fds, err := PrepareWrapperFDs(setup)
+	if err != nil {
+		t.Fatalf("PrepareWrapperFDs failed: %v", err)
+	}
+
+	defer fds.Close()
+
+	if len(fds.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(fds.Files))
+	}
+
+	// Verify we can read from the FD
+	content := make([]byte, 100)
+
+	n, err := fds.Files[0].Read(content)
+	if err != nil {
+		t.Fatalf("failed to read from FD: %v", err)
+	}
+
+	if string(content[:n]) != "#!/bin/bash\necho hello\n" {
+		t.Errorf("unexpected content: %q", string(content[:n]))
+	}
+}
+
+func Test_PrepareWrapperFDs_Generates_Correct_Args(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		Wrappers: []WrapperContent{
+			{
+				Script:       "#!/bin/bash\nscript1\n",
+				Destinations: []string{"/usr/bin/cmd1"},
+			},
+			{
+				Script:       "#!/bin/bash\nscript2\n",
+				Destinations: []string{"/usr/bin/cmd2", "/bin/cmd2"},
+			},
+		},
+	}
+
+	fds, err := PrepareWrapperFDs(setup)
+	if err != nil {
+		t.Fatalf("PrepareWrapperFDs failed: %v", err)
+	}
+
+	defer fds.Close()
+
+	// Should have 3 files (one per destination, since each --ro-bind-data consumes the FD)
+	if len(fds.Files) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(fds.Files))
+	}
+
+	// Each destination gets its own FD because --ro-bind-data consumes the FD content
+	// FD 3: /usr/bin/cmd1 (from wrapper 1)
+	// FD 4: /usr/bin/cmd2 (from wrapper 2, first dest)
+	// FD 5: /bin/cmd2 (from wrapper 2, second dest)
+	expectedArgs := []string{
+		"--perms", "0555", "--ro-bind-data", "3", "/usr/bin/cmd1",
+		"--perms", "0555", "--ro-bind-data", "4", "/usr/bin/cmd2",
+		"--perms", "0555", "--ro-bind-data", "5", "/bin/cmd2",
+	}
+
+	if len(fds.Args) != len(expectedArgs) {
+		t.Fatalf("expected %d args, got %d: %v", len(expectedArgs), len(fds.Args), fds.Args)
+	}
+
+	for i, expected := range expectedArgs {
+		if fds.Args[i] != expected {
+			t.Errorf("args[%d] = %q, want %q", i, fds.Args[i], expected)
+		}
+	}
+}
+
+func Test_PrepareWrapperFDs_Close_Releases_Resources(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		Wrappers: []WrapperContent{
+			{
+				Script:       "#!/bin/bash\necho test\n",
+				Destinations: []string{"/usr/bin/test"},
+			},
+		},
+	}
+
+	fds, err := PrepareWrapperFDs(setup)
+	if err != nil {
+		t.Fatalf("PrepareWrapperFDs failed: %v", err)
+	}
+
+	// Get the FD number before closing
+	fd := fds.Files[0]
+
+	// Close should succeed
+	fds.Close()
+
+	// Trying to read from closed FD should fail
+	buf := make([]byte, 10)
+
+	_, err = fd.Read(buf)
+	if err == nil {
+		t.Error("expected error reading from closed FD")
+	}
+}
+
+// ============================================================================
 // E2E tests for self binary mount - agent-sandbox accessible inside sandbox
 // ============================================================================
 
