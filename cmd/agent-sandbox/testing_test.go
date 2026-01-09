@@ -56,9 +56,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// BinaryPath returns the path to the compiled agent-sandbox binary.
+// GetTestBinaryPath returns the path to the compiled agent-sandbox binary.
 // Skips the test if the binary is not available.
-func BinaryPath(t *testing.T) string {
+func GetTestBinaryPath(t *testing.T) string {
 	t.Helper()
 
 	if testBinary == "" {
@@ -74,7 +74,7 @@ func BinaryPath(t *testing.T) string {
 func RunBinary(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 
-	binary := BinaryPath(t)
+	binary := GetTestBinaryPath(t)
 
 	var outBuf, errBuf bytes.Buffer
 
@@ -101,7 +101,7 @@ func RunBinary(t *testing.T, args ...string) (string, string, int) {
 func RunBinaryWithEnv(t *testing.T, env map[string]string, args ...string) (string, string, int) {
 	t.Helper()
 
-	binary := BinaryPath(t)
+	binary := GetTestBinaryPath(t)
 
 	var outBuf, errBuf bytes.Buffer
 
@@ -656,10 +656,10 @@ func (r *GitRepo) run(args ...string) {
 // Test helper tests
 // ============================================================================
 
-func Test_BinaryPath_Returns_Compiled_Binary_Path(t *testing.T) {
+func Test_GetTestBinaryPath_Returns_Compiled_Binary_Path(t *testing.T) {
 	t.Parallel()
 
-	path := BinaryPath(t)
+	path := GetTestBinaryPath(t)
 
 	if path == "" {
 		t.Fatal("BinaryPath returned empty string")

@@ -51,7 +51,7 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 		Short:   "Run command in sandbox",
 		Long:    "Run a command inside the bubblewrap sandbox with configured filesystem access.",
 		Aliases: []string{},
-		Exec: func(_ context.Context, _ io.Reader, _, stderr io.Writer, args []string) error {
+		Exec: func(_ context.Context, _ io.Reader, stdout, stderr io.Writer, args []string) error {
 			err := checkPlatformPrerequisites()
 			if err != nil {
 				return err
@@ -59,7 +59,7 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 
 			// Validate home directory early (before any path resolution)
 			// This is required because @base and many presets reference home paths
-			_, err = GetHomeDir(env)
+			homeDir, err := GetHomeDir(env)
 			if err != nil {
 				return err
 			}
@@ -74,6 +74,55 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				if err != nil {
 					return err
 				}
+			}
+
+			// Expand presets with context
+			presetCtx := PresetContext{
+				HomeDir: homeDir,
+				WorkDir: cfg.EffectiveCwd,
+				// LoadedConfigPaths: would be set by config loading in full implementation
+			}
+
+			presetPaths, err := ExpandPresets(cfg.Filesystem.Presets, presetCtx)
+			if err != nil {
+				return err
+			}
+
+			// Resolve all paths
+			resolvedPaths, err := ResolvePaths(&ResolvePathsInput{
+				Preset:  PathLayerInput(presetPaths),
+				Global:  PathLayerInput{}, // global config paths handled by config loading
+				Project: PathLayerInput{}, // project config paths handled by config loading
+				CLI: PathLayerInput{
+					Ro:      cfg.Filesystem.Ro,
+					Rw:      cfg.Filesystem.Rw,
+					Exclude: cfg.Filesystem.Exclude,
+				},
+				HomeDir: homeDir,
+				WorkDir: cfg.EffectiveCwd,
+			})
+			if err != nil {
+				return err
+			}
+
+			// Validate working directory is not excluded
+			err = ValidateWorkDirNotExcluded(resolvedPaths, cfg.EffectiveCwd)
+			if err != nil {
+				return err
+			}
+
+			// Apply specificity rules and sort by mount order
+			sortedPaths := ResolveAndSort(resolvedPaths)
+
+			// Generate bwrap arguments
+			bwrapArgs := BwrapArgs(sortedPaths, cfg)
+
+			// Check for dry-run mode
+			dryRun, _ := flags.GetBool("dry-run")
+			if dryRun {
+				printDryRunOutput(stdout, bwrapArgs, args)
+
+				return nil
 			}
 
 			fprintln(stderr, "exec command not yet implemented")
@@ -225,4 +274,49 @@ func GetHomeDir(env map[string]string) (string, error) {
 	}
 
 	return home, nil
+}
+
+// printDryRunOutput formats and prints the bwrap command for dry-run mode.
+// The output is shell-compatible and can be copy-pasted to run manually.
+func printDryRunOutput(output io.Writer, bwrapArgs []string, command []string) {
+	// Print bwrap with arguments using line continuation for readability
+	fprintf(output, "bwrap \\\n")
+
+	for _, arg := range bwrapArgs {
+		fprintf(output, "  %s \\\n", shellQuoteIfNeeded(arg))
+	}
+
+	// Print command separator and user command
+	fprintf(output, "  --")
+
+	for _, arg := range command {
+		fprintf(output, " %s", shellQuoteIfNeeded(arg))
+	}
+
+	fprintln(output)
+}
+
+// shellQuoteIfNeeded returns the string quoted if it contains special characters,
+// otherwise returns it unchanged. This makes the output shell-safe.
+func shellQuoteIfNeeded(str string) string {
+	// Check if the string needs quoting
+	for _, c := range str {
+		if !isShellSafeChar(c) {
+			// Use single quotes for safety, escaping any existing single quotes
+			escaped := strings.ReplaceAll(str, "'", "'\"'\"'")
+
+			return "'" + escaped + "'"
+		}
+	}
+
+	return str
+}
+
+// isShellSafeChar returns true if the character doesn't need quoting in shell.
+func isShellSafeChar(c rune) bool {
+	// Safe characters: alphanumeric, dash, underscore, dot, forward slash, colon, equals
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '-' || c == '_' || c == '.' || c == '/' || c == ':' || c == '='
 }

@@ -567,3 +567,231 @@ func Test_Exec_Succeeds_When_Home_Is_Valid(t *testing.T) {
 		t.Errorf("expected exit code 0 for valid home, got %d\nstderr: %s", code, stderr)
 	}
 }
+
+// ============================================================================
+// Dry-run tests
+// ============================================================================
+
+func Test_DryRun_Outputs_Bwrap_Command(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	stdout, _, code := c.Run("--dry-run", "echo", "hello")
+
+	// Exit code should be 0 for dry-run
+	if code != 0 {
+		t.Errorf("expected exit code 0 for --dry-run, got %d", code)
+	}
+
+	// Output should start with "bwrap"
+	AssertContains(t, stdout, "bwrap")
+}
+
+func Test_DryRun_Includes_Standard_Bwrap_Args(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	stdout, _, code := c.Run("--dry-run", "npm", "install")
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	// Should contain standard bwrap arguments from BwrapArgs
+	AssertContains(t, stdout, "--die-with-parent")
+	AssertContains(t, stdout, "--unshare-all")
+	AssertContains(t, stdout, "--dev")
+	AssertContains(t, stdout, "--proc")
+	AssertContains(t, stdout, "--ro-bind")
+	AssertContains(t, stdout, "--chdir")
+}
+
+func Test_DryRun_Includes_Command_Separator(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	stdout, _, code := c.Run("--dry-run", "npm", "install")
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	// Should contain "--" separator followed by command
+	AssertContains(t, stdout, "-- npm install")
+}
+
+func Test_DryRun_Includes_User_Command_And_Args(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	stdout, _, code := c.Run("--dry-run", "git", "commit", "-m", "test message")
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	// Should contain the full user command
+	// Note: "test message" contains a space so it should be quoted
+	AssertContains(t, stdout, "git")
+	AssertContains(t, stdout, "commit")
+	AssertContains(t, stdout, "-m")
+	AssertContains(t, stdout, "test message")
+}
+
+func Test_DryRun_Exit_Code_Zero_Regardless_Of_Command(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Even a command that doesn't exist should result in exit 0 for dry-run
+	_, _, code := c.Run("--dry-run", "nonexistent-command-12345")
+
+	if code != 0 {
+		t.Errorf("expected exit code 0 for --dry-run, got %d", code)
+	}
+}
+
+func Test_DryRun_Respects_Network_Disabled(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// With network enabled (default), should have --share-net
+	stdoutWithNet, _, _ := c.Run("--dry-run", "echo", "test")
+	AssertContains(t, stdoutWithNet, "--share-net")
+
+	// With network disabled, should NOT have --share-net
+	stdoutNoNet, _, _ := c.Run("--dry-run", "--network=false", "echo", "test")
+	AssertNotContains(t, stdoutNoNet, "--share-net")
+}
+
+func Test_DryRun_Works_With_Explicit_Exec_Command(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	stdout, _, code := c.Run("exec", "--dry-run", "echo", "hello")
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	AssertContains(t, stdout, "bwrap")
+	AssertContains(t, stdout, "-- echo hello")
+}
+
+func Test_DryRun_Output_Has_Line_Continuations(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	stdout, _, code := c.Run("--dry-run", "echo", "test")
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	// Output should have line continuations for readability
+	AssertContains(t, stdout, "\\\n")
+}
+
+func Test_DryRun_Does_Not_Execute_Command(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Create a marker file that the command would create if executed
+	markerPath := c.Dir + "/marker-created"
+
+	// Run a command that would create a file
+	_, _, code := c.Run("--dry-run", "touch", markerPath)
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	// The marker file should NOT exist because command was not executed
+	if c.FileExists("marker-created") {
+		t.Error("dry-run should not execute the command, but marker file was created")
+	}
+}
+
+func Test_DryRun_Quotes_Args_With_Special_Characters(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	stdout, _, code := c.Run("--dry-run", "echo", "hello world", "with'quote")
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	// Args with spaces should be quoted
+	AssertContains(t, stdout, "'hello world'")
+	// Args with single quotes should be properly escaped
+	AssertContains(t, stdout, "with")
+	AssertContains(t, stdout, "quote")
+}
+
+func Test_ShellQuoteIfNeeded_Returns_Unquoted_For_Safe_Strings(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		input    string
+		expected string
+	}{
+		{"hello", "hello"},
+		{"test123", "test123"},
+		{"/usr/bin/git", "/usr/bin/git"},
+		{"--ro-bind", "--ro-bind"},
+		{"key=value", "key=value"},
+		{"file.txt", "file.txt"},
+		{"path/to/file", "path/to/file"},
+	}
+
+	for _, tc := range testCases {
+		result := shellQuoteIfNeeded(tc.input)
+		if result != tc.expected {
+			t.Errorf("shellQuoteIfNeeded(%q) = %q, expected %q", tc.input, result, tc.expected)
+		}
+	}
+}
+
+func Test_ShellQuoteIfNeeded_Quotes_Strings_With_Special_Chars(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		input    string
+		expected string
+	}{
+		{"hello world", "'hello world'"},
+		{"test$var", "'test$var'"},
+		{"command; rm -rf", "'command; rm -rf'"},
+		{"back`tick", "'back`tick'"},
+		{"double\"quote", "'double\"quote'"},
+	}
+
+	for _, tc := range testCases {
+		result := shellQuoteIfNeeded(tc.input)
+		if result != tc.expected {
+			t.Errorf("shellQuoteIfNeeded(%q) = %q, expected %q", tc.input, result, tc.expected)
+		}
+	}
+}
+
+func Test_ShellQuoteIfNeeded_Escapes_Single_Quotes(t *testing.T) {
+	t.Parallel()
+
+	// Single quotes need special handling: 'don't' becomes 'don'"'"'t'
+	result := shellQuoteIfNeeded("don't")
+
+	// The result should contain the properly escaped quote
+	if result != "'don'\"'\"'t'" {
+		t.Errorf("shellQuoteIfNeeded(\"don't\") = %q, expected properly escaped single quote", result)
+	}
+}
