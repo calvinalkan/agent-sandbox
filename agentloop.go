@@ -23,13 +23,15 @@ import (
 
 // --- Global vars ---
 var (
-	tmuxSession string
-	startTime   time.Time
-	numAgents   int
-	numAgentsMu sync.RWMutex
-	draining    bool
-	drainingMu  sync.RWMutex
-	agentRunner string // "pi" or "claude"
+	tmuxSession  string
+	startTime    time.Time
+	numAgents    int
+	numAgentsMu  sync.RWMutex
+	draining     bool
+	drainingMu   sync.RWMutex
+	agentRunner  string // "pi" or "claude"
+	dispatched   = make(map[string]bool)
+	dispatchedMu sync.RWMutex
 )
 
 func init() {
@@ -397,6 +399,24 @@ func setDraining(v bool) {
 	draining = v
 }
 
+func isDispatched(ticketID string) bool {
+	dispatchedMu.RLock()
+	defer dispatchedMu.RUnlock()
+	return dispatched[ticketID]
+}
+
+func markDispatched(ticketID string) {
+	dispatchedMu.Lock()
+	defer dispatchedMu.Unlock()
+	dispatched[ticketID] = true
+}
+
+func clearDispatched(ticketID string) {
+	dispatchedMu.Lock()
+	defer dispatchedMu.Unlock()
+	delete(dispatched, ticketID)
+}
+
 func runLoop(promptFile string, stopCh <-chan struct{}) {
 	startTime = time.Now()
 	lastStatus := time.Now()
@@ -451,19 +471,27 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 
 		// Check for orphaned tickets first (in_progress with worktree but no agent)
 		orphanedTickets := getOrphanedTickets()
-		
+
 		var ticketID string
 		var isOrphaned bool
 		if len(orphanedTickets) > 0 {
 			ticketID = orphanedTickets[0]
 			isOrphaned = true
 			log.Printf("restarting orphaned ticket: %s", formatTicketWithTitle(ticketID))
-		} else if len(readyTickets) > 0 {
-			ticketID = readyTickets[0]
 		} else {
-			time.Sleep(backoff)
-			backoff = min(backoff*2, maxBackoff)
-			continue
+			// Filter out already-dispatched tickets
+			ticketID = ""
+			for _, id := range readyTickets {
+				if !isDispatched(id) {
+					ticketID = id
+					break
+				}
+			}
+			if ticketID == "" {
+				time.Sleep(backoff)
+				backoff = min(backoff*2, maxBackoff)
+				continue
+			}
 		}
 
 		promptBytes, err := os.ReadFile(promptFile)
@@ -480,7 +508,9 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 			continue
 		}
 
+		markDispatched(ticketID)
 		if err := startAgent(ticketID, wtPath, string(promptBytes)); err != nil {
+			clearDispatched(ticketID)
 			log.Printf("start failed: %s: %v", ticketID, err)
 			time.Sleep(backoff)
 			continue
@@ -692,21 +722,24 @@ func cleanupDeadAgents() {
 				log.Printf("WARN: agent exited, ticket %s still %s", formatTicketWithTitle(ticketID), status)
 			}
 			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
+			clearDispatched(ticketID)
 			continue
 		}
 
 		status := getTicketStatus(ticketID)
-		if status == "closed" && !branchExists(branchName) {
+		if status == "closed" && branchMerged(branchName) {
 			log.Printf("agent done: %s", formatTicketWithTitle(ticketID))
 			killAgentInPane(pid)
 			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
+			clearDispatched(ticketID)
 			continue
 		}
 	}
 }
 
-func branchExists(branchName string) bool {
-	cmd := exec.Command("git", "rev-parse", "--verify", branchName)
+func branchMerged(branchName string) bool {
+	// Check if branch commits are already in HEAD (main branch)
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", branchName, "HEAD")
 	return cmd.Run() == nil
 }
 
