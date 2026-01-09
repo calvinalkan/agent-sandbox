@@ -61,8 +61,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Ensure tmux session exists
-	ensureTmuxSession()
+
 
 	lastStatus := time.Now()
 	backoff := 1 * time.Second
@@ -89,10 +88,10 @@ func main() {
 		// Periodic status (every 10s)
 		if time.Since(lastStatus) >= 10*time.Second {
 			if len(activeTickets) > 0 {
-				log.Printf("running: %s | waiting: %d tickets", 
+				log.Printf("running: %s | %d ready for pickup", 
 					strings.Join(activeTickets, ", "), len(readyTickets))
 			} else {
-				log.Printf("idle | waiting: %d tickets", len(readyTickets))
+				log.Printf("idle | %d ready for pickup", len(readyTickets))
 			}
 			lastStatus = time.Now()
 		}
@@ -131,15 +130,8 @@ func main() {
 	}
 }
 
-func ensureTmuxSession() {
-	cmd := exec.Command("tmux", "has-session", "-t", tmuxSession)
-	if cmd.Run() != nil {
-		cmd = exec.Command("tmux", "new-session", "-d", "-s", tmuxSession)
-		if err := cmd.Run(); err != nil {
-			log.Fatalf("tmux session failed: %v", err)
-		}
-		log.Printf("created tmux session: %s", tmuxSession)
-	}
+func tmuxSessionExists() bool {
+	return exec.Command("tmux", "has-session", "-t", tmuxSession).Run() == nil
 }
 
 func getReadyTickets() []string {
@@ -228,12 +220,24 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 
 	windowName := "ticket-" + ticketID
 	piCmd := fmt.Sprintf("cd %s && pi @.wt/prompt.md", wtPath)
-	
+
+	var cmd *exec.Cmd
+	if tmuxSessionExists() {
+		// Add window to existing session
+		cmd = exec.Command("tmux", "new-window", "-t", tmuxSession, "-n", windowName, piCmd)
+	} else {
+		// Create session with this agent as first window
+		cmd = exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-n", windowName, piCmd)
+		log.Printf("created tmux session: %s", tmuxSession)
+	}
+
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
 	// Set remain-on-exit so we can detect completion status
 	exec.Command("tmux", "set-option", "-t", tmuxSession, "remain-on-exit", "on").Run()
-	
-	cmd := exec.Command("tmux", "new-window", "-t", tmuxSession, "-n", windowName, piCmd)
-	return cmd.Run()
+	return nil
 }
 
 func cleanupDeadAgents() {

@@ -348,22 +348,12 @@ func mergeConfigs(base, override *Config) Config {
 		result.Docker = override.Docker
 	}
 
-	// Merge filesystem config
-	if len(override.Filesystem.Presets) > 0 {
-		result.Filesystem.Presets = override.Filesystem.Presets
-	}
-
-	if len(override.Filesystem.Ro) > 0 {
-		result.Filesystem.Ro = override.Filesystem.Ro
-	}
-
-	if len(override.Filesystem.Rw) > 0 {
-		result.Filesystem.Rw = override.Filesystem.Rw
-	}
-
-	if len(override.Filesystem.Exclude) > 0 {
-		result.Filesystem.Exclude = override.Filesystem.Exclude
-	}
+	// Merge filesystem config: arrays are concatenated per spec
+	// Order matters: base paths first, then override paths (for specificity tie-breaking)
+	result.Filesystem.Presets = append(result.Filesystem.Presets, override.Filesystem.Presets...)
+	result.Filesystem.Ro = append(result.Filesystem.Ro, override.Filesystem.Ro...)
+	result.Filesystem.Rw = append(result.Filesystem.Rw, override.Filesystem.Rw...)
+	result.Filesystem.Exclude = append(result.Filesystem.Exclude, override.Filesystem.Exclude...)
 
 	// Merge commands map (later values override earlier for same key)
 	if len(override.Commands) > 0 {

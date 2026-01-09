@@ -173,7 +173,7 @@ func TestLoadConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "filesystem arrays from project override global",
+			name: "filesystem arrays from project are concatenated with global",
 			globalFiles: map[string]string{
 				"agent-sandbox/config.json": `{
 					"filesystem": {
@@ -193,8 +193,89 @@ func TestLoadConfig(t *testing.T) {
 				Network: boolPtr(true),
 				Docker:  boolPtr(false),
 				Filesystem: FilesystemConfig{
-					Ro: []string{"/project/ro"},
-					Rw: []string{"/global/rw"}, // kept from global
+					Ro: []string{"/global/ro", "/project/ro"}, // concatenated
+					Rw: []string{"/global/rw"},                // from global
+				},
+			},
+		},
+		{
+			name: "all filesystem arrays are concatenated",
+			globalFiles: map[string]string{
+				"agent-sandbox/config.json": `{
+					"filesystem": {
+						"presets": ["!@lint/go"],
+						"ro": ["/global/ro"],
+						"rw": ["/global/rw"],
+						"exclude": ["/global/exclude"]
+					}
+				}`,
+			},
+			files: map[string]string{
+				".agent-sandbox.json": `{
+					"filesystem": {
+						"presets": ["!@lint/python"],
+						"ro": ["/project/ro"],
+						"rw": ["/project/rw"],
+						"exclude": ["/project/exclude"]
+					}
+				}`,
+			},
+			want: Config{
+				Network: boolPtr(true),
+				Docker:  boolPtr(false),
+				Filesystem: FilesystemConfig{
+					Presets: []string{"!@lint/go", "!@lint/python"},
+					Ro:      []string{"/global/ro", "/project/ro"},
+					Rw:      []string{"/global/rw", "/project/rw"},
+					Exclude: []string{"/global/exclude", "/project/exclude"},
+				},
+			},
+		},
+		{
+			name: "empty override arrays do not affect base arrays",
+			globalFiles: map[string]string{
+				"agent-sandbox/config.json": `{
+					"filesystem": {
+						"ro": ["/global/ro"],
+						"rw": ["/global/rw"]
+					}
+				}`,
+			},
+			files: map[string]string{
+				".agent-sandbox.json": `{
+					"network": false
+				}`,
+			},
+			want: Config{
+				Network: boolPtr(false),
+				Docker:  boolPtr(false),
+				Filesystem: FilesystemConfig{
+					Ro: []string{"/global/ro"},
+					Rw: []string{"/global/rw"},
+				},
+			},
+		},
+		{
+			name: "three-layer concatenation: default, global, project",
+			globalFiles: map[string]string{
+				"agent-sandbox/config.json": `{
+					"filesystem": {
+						"ro": ["/global/secrets"]
+					}
+				}`,
+			},
+			files: map[string]string{
+				".agent-sandbox.json": `{
+					"filesystem": {
+						"ro": ["/project/sensitive"]
+					}
+				}`,
+			},
+			want: Config{
+				Network: boolPtr(true),
+				Docker:  boolPtr(false),
+				Filesystem: FilesystemConfig{
+					Ro: []string{"/global/secrets", "/project/sensitive"},
 				},
 			},
 		},
@@ -760,6 +841,172 @@ func Test_Config_Commands_Merge(t *testing.T) {
 				if _, ok := tt.want[cmdName]; !ok {
 					t.Errorf("unexpected command %q in config", cmdName)
 				}
+			}
+		})
+	}
+}
+
+func Test_MergeConfigs_Concatenates_Filesystem_Arrays(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		base     Config
+		override Config
+		want     FilesystemConfig
+	}{
+		{
+			name: "ro arrays are concatenated",
+			base: Config{
+				Filesystem: FilesystemConfig{
+					Ro: []string{"/base/path1", "/base/path2"},
+				},
+			},
+			override: Config{
+				Filesystem: FilesystemConfig{
+					Ro: []string{"/override/path1"},
+				},
+			},
+			want: FilesystemConfig{
+				Ro: []string{"/base/path1", "/base/path2", "/override/path1"},
+			},
+		},
+		{
+			name: "rw arrays are concatenated",
+			base: Config{
+				Filesystem: FilesystemConfig{
+					Rw: []string{"/base/rw"},
+				},
+			},
+			override: Config{
+				Filesystem: FilesystemConfig{
+					Rw: []string{"/override/rw1", "/override/rw2"},
+				},
+			},
+			want: FilesystemConfig{
+				Rw: []string{"/base/rw", "/override/rw1", "/override/rw2"},
+			},
+		},
+		{
+			name: "exclude arrays are concatenated",
+			base: Config{
+				Filesystem: FilesystemConfig{
+					Exclude: []string{"/base/exclude"},
+				},
+			},
+			override: Config{
+				Filesystem: FilesystemConfig{
+					Exclude: []string{"/override/exclude"},
+				},
+			},
+			want: FilesystemConfig{
+				Exclude: []string{"/base/exclude", "/override/exclude"},
+			},
+		},
+		{
+			name: "presets arrays are concatenated",
+			base: Config{
+				Filesystem: FilesystemConfig{
+					Presets: []string{"!@lint/go"},
+				},
+			},
+			override: Config{
+				Filesystem: FilesystemConfig{
+					Presets: []string{"!@lint/python"},
+				},
+			},
+			want: FilesystemConfig{
+				Presets: []string{"!@lint/go", "!@lint/python"},
+			},
+		},
+		{
+			name: "empty override arrays do not affect base",
+			base: Config{
+				Filesystem: FilesystemConfig{
+					Ro:      []string{"/base/ro"},
+					Rw:      []string{"/base/rw"},
+					Exclude: []string{"/base/exclude"},
+					Presets: []string{"!@lint/go"},
+				},
+			},
+			override: Config{
+				Filesystem: FilesystemConfig{
+					Ro:      nil,
+					Rw:      nil,
+					Exclude: nil,
+					Presets: nil,
+				},
+			},
+			want: FilesystemConfig{
+				Ro:      []string{"/base/ro"},
+				Rw:      []string{"/base/rw"},
+				Exclude: []string{"/base/exclude"},
+				Presets: []string{"!@lint/go"},
+			},
+		},
+		{
+			name: "order preserved: base first then override",
+			base: Config{
+				Filesystem: FilesystemConfig{
+					Ro: []string{"/a", "/b"},
+				},
+			},
+			override: Config{
+				Filesystem: FilesystemConfig{
+					Ro: []string{"/c", "/d"},
+				},
+			},
+			want: FilesystemConfig{
+				Ro: []string{"/a", "/b", "/c", "/d"},
+			},
+		},
+		{
+			name: "all arrays concatenated in single merge",
+			base: Config{
+				Filesystem: FilesystemConfig{
+					Presets: []string{"!@lint/ts"},
+					Ro:      []string{"/ro1"},
+					Rw:      []string{"/rw1"},
+					Exclude: []string{"/ex1"},
+				},
+			},
+			override: Config{
+				Filesystem: FilesystemConfig{
+					Presets: []string{"!@lint/go"},
+					Ro:      []string{"/ro2"},
+					Rw:      []string{"/rw2"},
+					Exclude: []string{"/ex2"},
+				},
+			},
+			want: FilesystemConfig{
+				Presets: []string{"!@lint/ts", "!@lint/go"},
+				Ro:      []string{"/ro1", "/ro2"},
+				Rw:      []string{"/rw1", "/rw2"},
+				Exclude: []string{"/ex1", "/ex2"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := mergeConfigs(&tt.base, &tt.override)
+
+			if !slicesEqual(got.Filesystem.Presets, tt.want.Presets) {
+				t.Errorf("Presets: got %v, want %v", got.Filesystem.Presets, tt.want.Presets)
+			}
+
+			if !slicesEqual(got.Filesystem.Ro, tt.want.Ro) {
+				t.Errorf("Ro: got %v, want %v", got.Filesystem.Ro, tt.want.Ro)
+			}
+
+			if !slicesEqual(got.Filesystem.Rw, tt.want.Rw) {
+				t.Errorf("Rw: got %v, want %v", got.Filesystem.Rw, tt.want.Rw)
+			}
+
+			if !slicesEqual(got.Filesystem.Exclude, tt.want.Exclude) {
+				t.Errorf("Exclude: got %v, want %v", got.Filesystem.Exclude, tt.want.Exclude)
 			}
 		})
 	}
