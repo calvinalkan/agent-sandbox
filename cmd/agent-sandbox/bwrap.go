@@ -110,12 +110,15 @@ func GenerateExcludeMounts(excludePaths []ResolvedPath, emptyFile string) []stri
 //  6. Self binary mount (agent-sandbox at /run/agent-sandbox)
 //  7. Marker file for sandbox detection (at /run/agent-sandbox/.marker)
 //  8. Individual path mounts, sorted by depth (shallower first)
-//  9. Working directory (--chdir)
+//  9. Exclude path mounts (overlay on top of ro/rw mounts)
+//  10. Working directory (--chdir)
+//
+// The emptyFile parameter is optional. If non-empty, exclude paths are processed
+// using GenerateExcludeMounts. If empty, exclude paths are skipped.
 //
 // Returns an error if docker is enabled but the socket cannot be found or resolved,
 // or if the agent-sandbox binary cannot be located.
-// Exclude paths are currently ignored (handled by d5g3tgg).
-func BwrapArgs(paths []ResolvedPath, cfg *Config) ([]string, error) {
+func BwrapArgs(paths []ResolvedPath, cfg *Config, emptyFile string) ([]string, error) {
 	// Process cleanup and namespace setup first
 	args := []string{
 		"--die-with-parent", // Auto-cleanup when parent dies
@@ -175,10 +178,16 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config) ([]string, error) {
 			// Use --bind-try for optional writable paths
 			args = append(args, "--bind-try", resolvedPath.Resolved, resolvedPath.Resolved)
 		case PathAccessExclude:
-			// Exclude mounts are implemented in d5g3tgg (directories vs files differ).
-			// For now, skip exclude paths - they'll be handled separately.
+			// Exclude paths are handled separately below after ro/rw mounts
+			// so they properly overlay any existing mounts
 			continue
 		}
+	}
+
+	// Process exclude paths if emptyFile is provided
+	// Exclude mounts come after ro/rw mounts to ensure they overlay correctly
+	if emptyFile != "" {
+		args = append(args, GenerateExcludeMounts(paths, emptyFile)...)
 	}
 
 	// Working directory

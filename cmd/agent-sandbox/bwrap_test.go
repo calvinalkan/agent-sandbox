@@ -24,10 +24,11 @@ const (
 )
 
 // mustBwrapArgs calls BwrapArgs and fails the test if it returns an error.
+// emptyFile is optional - pass "" to skip exclude processing.
 func mustBwrapArgs(t *testing.T, paths []ResolvedPath, cfg *Config) []string {
 	t.Helper()
 
-	args, err := BwrapArgs(paths, cfg)
+	args, err := BwrapArgs(paths, cfg, "")
 	if err != nil {
 		t.Fatalf("BwrapArgs returned unexpected error: %v", err)
 	}
