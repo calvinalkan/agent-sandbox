@@ -127,9 +127,24 @@ func resolveBasePreset(ctx PresetContext, _ map[string]bool) PresetPaths {
 }
 
 // resolveCachesPreset returns paths for the @caches preset.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveCachesPreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+// It makes build tool cache directories writable:
+//   - ~/.cache (XDG cache, used by many tools)
+//   - ~/.bun (Bun runtime and packages)
+//   - ~/go (Go modules, build cache)
+//   - ~/.npm (npm cache)
+//   - ~/.cargo (Rust/Cargo cache)
+//
+// Note: @caches ignores the disabled parameter (it's a simple preset).
+func resolveCachesPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	return PresetPaths{
+		Rw: []string{
+			ctx.HomeDir + "/.cache",
+			ctx.HomeDir + "/.bun",
+			ctx.HomeDir + "/go",
+			ctx.HomeDir + "/.npm",
+			ctx.HomeDir + "/.cargo",
+		},
+	}
 }
 
 // resolveGitPreset returns paths for the @git preset.

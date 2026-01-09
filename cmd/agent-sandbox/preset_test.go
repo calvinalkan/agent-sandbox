@@ -435,3 +435,199 @@ func Test_BasePreset_Returns_All_Three_Secret_Directories(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// @caches preset tests
+// ============================================================================
+
+func Test_CachesPreset_Returns_XDG_Cache_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.cache") {
+		t.Errorf("@caches should include ~/.cache in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_CachesPreset_Returns_Bun_Cache_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.bun") {
+		t.Errorf("@caches should include ~/.bun in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_CachesPreset_Returns_Go_Path_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/go") {
+		t.Errorf("@caches should include ~/go in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_CachesPreset_Returns_Npm_Cache_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.npm") {
+		t.Errorf("@caches should include ~/.npm in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_CachesPreset_Returns_Cargo_Cache_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/.cargo") {
+		t.Errorf("@caches should include ~/.cargo in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_CachesPreset_Returns_All_Cache_Directories(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/testuser",
+		WorkDir: "/home/testuser/myproject",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	expectedRw := []string{
+		"/home/testuser/.cache",
+		"/home/testuser/.bun",
+		"/home/testuser/go",
+		"/home/testuser/.npm",
+		"/home/testuser/.cargo",
+	}
+
+	if len(paths.Rw) != len(expectedRw) {
+		t.Errorf("@caches should have exactly %d rw paths, got %d: %v",
+			len(expectedRw), len(paths.Rw), paths.Rw)
+	}
+
+	for _, expected := range expectedRw {
+		if !sliceContains(paths.Rw, expected) {
+			t.Errorf("@caches should include %q in rw paths, got: %v", expected, paths.Rw)
+		}
+	}
+}
+
+func Test_CachesPreset_Returns_No_ReadOnly_Paths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if len(paths.Ro) != 0 {
+		t.Errorf("@caches should not return any ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_CachesPreset_Returns_No_Excluded_Paths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@caches should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_CachesPreset_Uses_Absolute_Paths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	for _, p := range paths.Rw {
+		if p == "" || p[0] != '/' {
+			t.Errorf("rw path should be absolute: %q", p)
+		}
+	}
+}
+
+func Test_CachesPreset_Ignores_Disabled_Map(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// @caches is a simple preset, so disabled should have no effect
+	disabled := map[string]bool{
+		"@caches": true,
+	}
+
+	paths := resolveCachesPreset(ctx, disabled)
+
+	// Should still return all paths
+	if len(paths.Rw) == 0 {
+		t.Error("@caches should return rw paths even with disabled map")
+	}
+}
+
+func Test_CachesPreset_Works_With_Different_Home_Dir(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/users/alice",
+		WorkDir: "/users/alice/project",
+	}
+
+	paths := resolveCachesPreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/users/alice/.cache") {
+		t.Errorf("@caches should use correct home dir, got: %v", paths.Rw)
+	}
+
+	if !sliceContains(paths.Rw, "/users/alice/go") {
+		t.Errorf("@caches should use correct home dir for go, got: %v", paths.Rw)
+	}
+}
