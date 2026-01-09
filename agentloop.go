@@ -665,7 +665,8 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 	switch agentRunner {
 	case "claude":
 		// Use agent-sandbox wrapper with dangerously-skip-permissions and extended thinking
-		agentCmd = fmt.Sprintf("cd %s && agent-sandbox claude --dangerously-skip-permissions --settings '{\"alwaysThinkingEnabled\": true}' \"$(cat .wt/prompt.md)\"", wtPath)
+		// Use exec to replace shell, keeping TTY intact
+		agentCmd = fmt.Sprintf("cd %s && exec agent-sandbox claude --dangerously-skip-permissions --settings '{\"alwaysThinkingEnabled\": true}' \"$(cat .wt/prompt.md)\"", wtPath)
 	default: // "pi"
 		agentCmd = fmt.Sprintf("cd %s && agent-sandbox pi @.wt/prompt.md", wtPath)
 	}
@@ -732,6 +733,11 @@ func cleanupDeadAgents() {
 			killAgentInPane(pid)
 			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
 			clearDispatched(ticketID)
+			// Cleanup worktree and branch (agent used --keep)
+			wtName := "ticket-" + ticketID
+			if err := exec.Command("wt", "remove", wtName, "--with-branch").Run(); err != nil {
+				log.Printf("worktree cleanup failed: %s: %v", wtName, err)
+			}
 			continue
 		}
 	}
