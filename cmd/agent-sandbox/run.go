@@ -27,7 +27,7 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 	flagHelp := globalFlags.BoolP("help", "h", false, "Show help")
 	flagVersion := globalFlags.BoolP("version", "v", false, "Show version and exit")
 	flagCwd := globalFlags.StringP("cwd", "C", "", "Run as if started in `dir`")
-	flagConfig := globalFlags.String("config", "", "Use specified config `file`")
+	flagConfig := globalFlags.StringP("config", "c", "", "Use specified config `file`")
 
 	err := globalFlags.Parse(args[1:])
 	if err != nil {
@@ -195,7 +195,7 @@ func fprintError(output io.Writer, err error) {
 const globalOptionsHelp = `  -h, --help             Show help
   -v, --version          Show version and exit
   -C, --cwd <dir>        Run as if started in <dir>
-      --config <file>    Use specified config file`
+  -c, --config <file>    Use specified config file`
 
 func printGlobalOptions(output io.Writer) {
 	fprintln(output, "Usage: agent-sandbox [flags] <command> [args]")

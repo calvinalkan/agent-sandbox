@@ -109,6 +109,20 @@ func Test_Run_Version_Flag_In_Help_Output(t *testing.T) {
 	AssertContains(t, stdout, "Show version")
 }
 
+func Test_Run_Help_Shows_Config_Short_Flag(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+	stdout, _, code := c.Run("--help")
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+
+	// Verify -c, --config is shown in help
+	AssertContains(t, stdout, "-c, --config")
+}
+
 func Test_Run_Error_Output_Contains_Error_Prefix(t *testing.T) {
 	t.Parallel()
 
@@ -200,6 +214,22 @@ func Test_Config_Uses_Custom_Config_When_Config_Flag(t *testing.T) {
 	AssertContains(t, stdout, "agent-sandbox")
 }
 
+func Test_Config_Uses_Custom_Config_When_C_Short_Flag(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+	c.WriteFile("custom-config.jsonc", `{"network": false}`)
+
+	// Should load custom config without error using short flag -c
+	stdout, stderr, code := c.Run("-c", "custom-config.jsonc", "--help")
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0\nstderr: %s", code, stderr)
+	}
+
+	AssertContains(t, stdout, "agent-sandbox")
+}
+
 func Test_Config_Invalid_JSON_Returns_Error(t *testing.T) {
 	t.Parallel()
 
@@ -224,6 +254,21 @@ func Test_Config_Missing_Explicit_Config_Returns_Error(t *testing.T) {
 	// Reference a config file that doesn't exist - should error (per spec)
 	// Use exec command (not --help) because help doesn't load config per SPEC
 	_, stderr, code := c.Run("--config", "nonexistent.jsonc", "exec", "echo", "hello")
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+
+	AssertContains(t, stderr, "nonexistent.jsonc")
+}
+
+func Test_Config_Missing_Explicit_Config_Returns_Error_With_Short_Flag(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Reference a config file that doesn't exist using short flag -c
+	_, stderr, code := c.Run("-c", "nonexistent.jsonc", "exec", "echo", "hello")
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
