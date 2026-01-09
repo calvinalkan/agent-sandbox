@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -10,8 +12,74 @@ const (
 	testRunPath         = "/run"
 	bwrapRoBindTry      = "--ro-bind-try"
 	bwrapBindTry        = "--bind-try"
+	bwrapRoBind         = "--ro-bind"
+	bwrapBind           = "--bind"
+	bwrapTmpfs          = "--tmpfs"
+	devNull             = "/dev/null"
 	testHomeUserProject = "/home/user/project"
 )
+
+// mustBwrapArgs calls BwrapArgs and fails the test if it returns an error.
+func mustBwrapArgs(t *testing.T, paths []ResolvedPath, cfg *Config) []string {
+	t.Helper()
+
+	args, err := BwrapArgs(paths, cfg)
+	if err != nil {
+		t.Fatalf("BwrapArgs returned unexpected error: %v", err)
+	}
+
+	return args
+}
+
+// createTestSocket creates a real file (simulating a socket) in a temp dir.
+// Returns the path to the file.
+func createTestSocket(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "docker.sock")
+
+	err := os.WriteFile(socketPath, []byte{}, 0o600)
+	if err != nil {
+		t.Fatalf("failed to create test socket: %v", err)
+	}
+
+	return socketPath
+}
+
+// createTestSocketSymlink creates a real file and a symlink to it.
+// Returns (symlinkPath, realPath).
+func createTestSocketSymlink(t *testing.T) (string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "real", "docker.sock")
+	symlinkPath := filepath.Join(dir, "link", "docker.sock")
+
+	// Create the real file
+	err := os.MkdirAll(filepath.Dir(realPath), 0o750)
+	if err != nil {
+		t.Fatalf("failed to create real dir: %v", err)
+	}
+
+	err = os.WriteFile(realPath, []byte{}, 0o600)
+	if err != nil {
+		t.Fatalf("failed to create real socket: %v", err)
+	}
+
+	// Create the symlink
+	err = os.MkdirAll(filepath.Dir(symlinkPath), 0o750)
+	if err != nil {
+		t.Fatalf("failed to create link dir: %v", err)
+	}
+
+	err = os.Symlink(realPath, symlinkPath)
+	if err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	return symlinkPath, realPath
+}
 
 func Test_BwrapArgs_Includes_Die_With_Parent(t *testing.T) {
 	t.Parallel()
@@ -20,7 +88,7 @@ func Test_BwrapArgs_Includes_Die_With_Parent(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	if !slices.Contains(args, "--die-with-parent") {
 		t.Errorf("expected --die-with-parent in args, got: %v", args)
@@ -34,7 +102,7 @@ func Test_BwrapArgs_Includes_Unshare_All(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	if !slices.Contains(args, "--unshare-all") {
 		t.Errorf("expected --unshare-all in args, got: %v", args)
@@ -48,7 +116,7 @@ func Test_BwrapArgs_Includes_Share_Net_When_Network_Enabled(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	if !slices.Contains(args, "--share-net") {
 		t.Errorf("expected --share-net in args when network enabled, got: %v", args)
@@ -62,7 +130,7 @@ func Test_BwrapArgs_Omits_Share_Net_When_Network_Disabled(t *testing.T) {
 		Network:      boolPtr(false),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	if slices.Contains(args, "--share-net") {
 		t.Errorf("expected no --share-net in args when network disabled, got: %v", args)
@@ -76,7 +144,7 @@ func Test_BwrapArgs_Mounts_Dev_Virtual(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	// Find the --dev flag and check its argument
 	idx := slices.Index(args, "--dev")
@@ -96,7 +164,7 @@ func Test_BwrapArgs_Mounts_Proc_Virtual(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	// Find the --proc flag and check its argument
 	idx := slices.Index(args, "--proc")
@@ -116,13 +184,13 @@ func Test_BwrapArgs_Mounts_Root_Readonly_First(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	// Find --ro-bind / / in args
 	found := false
 
 	for i := range len(args) - 2 {
-		if args[i] == "--ro-bind" && args[i+1] == "/" && args[i+2] == "/" {
+		if args[i] == bwrapRoBind && args[i+1] == "/" && args[i+2] == "/" {
 			found = true
 
 			break
@@ -130,7 +198,7 @@ func Test_BwrapArgs_Mounts_Root_Readonly_First(t *testing.T) {
 	}
 
 	if !found {
-		t.Errorf("expected --ro-bind / / in args, got: %v", args)
+		t.Errorf("expected %s / / in args, got: %v", bwrapRoBind, args)
 	}
 }
 
@@ -141,10 +209,10 @@ func Test_BwrapArgs_Mounts_Run_As_Tmpfs(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	// Find --tmpfs /run in args
-	idx := slices.Index(args, "--tmpfs")
+	idx := slices.Index(args, bwrapTmpfs)
 	if idx == -1 {
 		t.Fatalf("expected --tmpfs in args, got: %v", args)
 	}
@@ -161,7 +229,7 @@ func Test_BwrapArgs_Sets_Chdir(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	idx := slices.Index(args, "--chdir")
 	if idx == -1 {
@@ -183,7 +251,7 @@ func Test_BwrapArgs_Generates_Ro_Bind_Try_For_Ro_Paths(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(paths, cfg)
+	args := mustBwrapArgs(t, paths, cfg)
 
 	// Find --ro-bind-try /home/user/code /home/user/code
 	found := false
@@ -211,7 +279,7 @@ func Test_BwrapArgs_Generates_Bind_Try_For_Rw_Paths(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(paths, cfg)
+	args := mustBwrapArgs(t, paths, cfg)
 
 	// Find --bind-try /home/user/project/.generated /home/user/project/.generated
 	found := false
@@ -239,7 +307,7 @@ func Test_BwrapArgs_Skips_Exclude_Paths(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(paths, cfg)
+	args := mustBwrapArgs(t, paths, cfg)
 
 	// Exclude paths should NOT appear in args (handled by d5g3tgg)
 	argsStr := strings.Join(args, " ")
@@ -263,7 +331,7 @@ func Test_BwrapArgs_Maintains_Path_Order_For_Mount_Overlay(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(paths, cfg)
+	args := mustBwrapArgs(t, paths, cfg)
 
 	// Find indices of each path mount
 	homeIdx := -1
@@ -306,7 +374,7 @@ func Test_BwrapArgs_Handles_Multiple_Path_Types(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(paths, cfg)
+	args := mustBwrapArgs(t, paths, cfg)
 
 	// Check ro path is --ro-bind-try
 	foundRo := false
@@ -352,7 +420,7 @@ func Test_BwrapArgs_Base_Order_Is_Correct(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(nil, cfg)
+	args := mustBwrapArgs(t, nil, cfg)
 
 	// Verify the base order: die-with-parent, unshare-all, share-net, dev, proc, ro-bind /, tmpfs /run, chdir
 	// Find indices of key arguments
@@ -367,7 +435,7 @@ func Test_BwrapArgs_Base_Order_Is_Correct(t *testing.T) {
 	roBindRootIdx := -1
 
 	for i := range len(args) - 2 {
-		if args[i] == "--ro-bind" && args[i+1] == "/" && args[i+2] == "/" {
+		if args[i] == bwrapRoBind && args[i+1] == "/" && args[i+2] == "/" {
 			roBindRootIdx = i
 
 			break
@@ -378,7 +446,7 @@ func Test_BwrapArgs_Base_Order_Is_Correct(t *testing.T) {
 	tmpfsRunIdx := -1
 
 	for i := range len(args) - 1 {
-		if args[i] == "--tmpfs" && args[i+1] == testRunPath {
+		if args[i] == bwrapTmpfs && args[i+1] == testRunPath {
 			tmpfsRunIdx = i
 
 			break
@@ -425,13 +493,13 @@ func Test_BwrapArgs_Path_Mounts_Come_After_Base_Mounts(t *testing.T) {
 		Network:      boolPtr(true),
 		EffectiveCwd: testHomeUserProject,
 	}
-	args := BwrapArgs(paths, cfg)
+	args := mustBwrapArgs(t, paths, cfg)
 
 	// Find --tmpfs /run index
 	tmpfsRunIdx := -1
 
 	for i := range len(args) - 1 {
-		if args[i] == "--tmpfs" && args[i+1] == testRunPath {
+		if args[i] == bwrapTmpfs && args[i+1] == testRunPath {
 			tmpfsRunIdx = i
 
 			break
@@ -449,7 +517,7 @@ func Test_BwrapArgs_Path_Mounts_Come_After_Base_Mounts(t *testing.T) {
 		}
 	}
 
-	// Path mounts should come after --tmpfs /run
+	// Path mounts should come after tmpfs /run
 	if pathMountIdx < tmpfsRunIdx {
 		t.Errorf("path mounts should come after base mounts (tmpfs /run)")
 	}
@@ -475,11 +543,192 @@ func Test_BwrapArgs_Deterministic_Output(t *testing.T) {
 	}
 
 	// Run multiple times and verify same output
-	args1 := BwrapArgs(paths, cfg)
-	args2 := BwrapArgs(paths, cfg)
-	args3 := BwrapArgs(paths, cfg)
+	args1 := mustBwrapArgs(t, paths, cfg)
+	args2 := mustBwrapArgs(t, paths, cfg)
+	args3 := mustBwrapArgs(t, paths, cfg)
 
 	if !slices.Equal(args1, args2) || !slices.Equal(args2, args3) {
 		t.Errorf("BwrapArgs should produce deterministic output")
+	}
+}
+
+// ============================================================================
+// Docker socket handling tests (using dockerSocketArgs directly)
+// ============================================================================
+
+func Test_DockerSocketArgs_Masks_Socket_When_Disabled(t *testing.T) {
+	t.Parallel()
+
+	socketPath := "/var/run/docker.sock"
+
+	args, err := dockerSocketArgs(boolPtr(false), socketPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have --ro-bind /dev/null <socketPath> to mask the socket
+	if len(args) != 3 {
+		t.Fatalf("expected 3 args, got %d: %v", len(args), args)
+	}
+
+	if args[0] != bwrapRoBind || args[1] != devNull || args[2] != socketPath {
+		t.Errorf("expected [%s %s %s], got: %v", bwrapRoBind, devNull, socketPath, args)
+	}
+}
+
+func Test_DockerSocketArgs_Masks_Socket_When_Docker_Is_Nil(t *testing.T) {
+	t.Parallel()
+
+	socketPath := "/var/run/docker.sock"
+
+	args, err := dockerSocketArgs(nil, socketPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Docker defaults to false when nil, so socket should be masked
+	if len(args) != 3 {
+		t.Fatalf("expected 3 args, got %d: %v", len(args), args)
+	}
+
+	if args[0] != bwrapRoBind || args[1] != devNull || args[2] != socketPath {
+		t.Errorf("expected [%s %s %s], got: %v", bwrapRoBind, devNull, socketPath, args)
+	}
+}
+
+func Test_DockerSocketArgs_Binds_Socket_When_Enabled(t *testing.T) {
+	t.Parallel()
+
+	// Create a real socket file in temp dir
+	socketPath := createTestSocket(t)
+
+	args, err := dockerSocketArgs(boolPtr(true), socketPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have --bind <resolved> <socketPath>
+	if len(args) != 3 {
+		t.Fatalf("expected 3 args, got %d: %v", len(args), args)
+	}
+
+	if args[0] != bwrapBind {
+		t.Errorf("expected first arg to be %s, got: %s", bwrapBind, args[0])
+	}
+
+	if args[2] != socketPath {
+		t.Errorf("expected third arg to be %s, got: %s", socketPath, args[2])
+	}
+}
+
+func Test_DockerSocketArgs_Resolves_Symlink(t *testing.T) {
+	t.Parallel()
+
+	// Create a real symlink in temp dir
+	symlinkPath, realPath := createTestSocketSymlink(t)
+
+	args, err := dockerSocketArgs(boolPtr(true), symlinkPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should resolve the symlink: --bind <realPath> <symlinkPath>
+	if len(args) != 3 {
+		t.Fatalf("expected 3 args, got %d: %v", len(args), args)
+	}
+
+	if args[0] != bwrapBind {
+		t.Errorf("expected first arg to be %s, got: %s", bwrapBind, args[0])
+	}
+
+	if args[1] != realPath {
+		t.Errorf("expected resolved path %s, got: %s", realPath, args[1])
+	}
+
+	if args[2] != symlinkPath {
+		t.Errorf("expected socket path %s, got: %s", symlinkPath, args[2])
+	}
+}
+
+func Test_DockerSocketArgs_Returns_Error_When_Socket_Missing(t *testing.T) {
+	t.Parallel()
+
+	// Use a path that doesn't exist
+	nonexistentPath := filepath.Join(t.TempDir(), "nonexistent", "docker.sock")
+
+	_, err := dockerSocketArgs(boolPtr(true), nonexistentPath)
+	if err == nil {
+		t.Fatal("expected error when socket doesn't exist")
+	}
+
+	// Check that error wraps ErrDockerSocketNotFound
+	if !strings.Contains(err.Error(), "docker socket not found") {
+		t.Errorf("expected error to mention 'docker socket not found', got: %v", err)
+	}
+}
+
+func Test_BwrapArgs_Docker_Socket_Args_Come_After_Tmpfs_Run(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies BwrapArgs ordering - docker is disabled so no socket resolution needed
+	cfg := &Config{
+		Network:      boolPtr(true),
+		Docker:       boolPtr(false),
+		EffectiveCwd: testHomeUserProject,
+	}
+	args := mustBwrapArgs(t, nil, cfg)
+
+	// Find --tmpfs /run index
+	tmpfsRunIdx := -1
+
+	for i := range len(args) - 1 {
+		if args[i] == bwrapTmpfs && args[i+1] == testRunPath {
+			tmpfsRunIdx = i
+
+			break
+		}
+	}
+
+	// Find docker socket --ro-bind index (masked with devNull)
+	dockerMaskIdx := -1
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == devNull && args[i+2] == DockerSocketPath {
+			dockerMaskIdx = i
+
+			break
+		}
+	}
+
+	if tmpfsRunIdx == -1 {
+		t.Fatal("expected tmpfs /run in args")
+	}
+
+	if dockerMaskIdx == -1 {
+		t.Fatal("expected docker socket mask in args")
+	}
+
+	// Docker socket mount should come after tmpfs /run
+	if dockerMaskIdx < tmpfsRunIdx {
+		t.Errorf("docker socket mask should come after tmpfs /run: tmpfsRunIdx=%d dockerMaskIdx=%d",
+			tmpfsRunIdx, dockerMaskIdx)
+	}
+}
+
+func Test_BwrapArgs_Docker_Disabled_Does_Not_Include_Socket_Bind(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Network:      boolPtr(true),
+		Docker:       boolPtr(false),
+		EffectiveCwd: testHomeUserProject,
+	}
+	args := mustBwrapArgs(t, nil, cfg)
+
+	// Should NOT have --bind for the docker socket (only --ro-bind for masking)
+	for i := range len(args) - 2 {
+		if args[i] == bwrapBind && args[i+2] == DockerSocketPath {
+			t.Errorf("expected no %s for docker socket when disabled, got: %v", bwrapBind, args)
+		}
 	}
 }

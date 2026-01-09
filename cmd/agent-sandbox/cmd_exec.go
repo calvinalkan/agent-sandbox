@@ -115,7 +115,10 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 			sortedPaths := ResolveAndSort(resolvedPaths)
 
 			// Generate bwrap arguments
-			bwrapArgs := BwrapArgs(sortedPaths, cfg)
+			bwrapArgs, err := BwrapArgs(sortedPaths, cfg)
+			if err != nil {
+				return err
+			}
 
 			// Check for dry-run mode
 			dryRun, _ := flags.GetBool("dry-run")
