@@ -14,6 +14,10 @@ import (
 // Run is the main entry point. Returns exit code.
 // sigCh can be nil if signal handling is not needed (e.g., in tests).
 func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[string]string, sigCh <-chan os.Signal) int {
+	// Find the first non-flag argument and check if it's a command
+	// If not, insert "exec" to make implicit exec work with flags like --network
+	args = insertExecIfNeeded(args)
+
 	// Create fresh global flags for this invocation
 	globalFlags := flag.NewFlagSet("agent-sandbox", flag.ContinueOnError)
 	globalFlags.SetInterspersed(false)
@@ -45,20 +49,44 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		return 0
 	}
 
+	commandAndArgs := globalFlags.Args()
+
+	// Show help: explicit --help or bare `agent-sandbox` with no args
+	// Do this BEFORE loading config so help always works (per spec)
+	if *flagHelp || len(commandAndArgs) == 0 {
+		// Create minimal command list for help display (no config needed)
+		commands := []*Command{
+			ExecCmd(nil, nil),
+			CheckCmd(),
+		}
+
+		printUsage(stdout, commands)
+
+		return 0
+	}
+
 	// Create context early so config loading can be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Load config (handles --cwd resolution internally)
-	cfg, err := LoadConfig(LoadConfigInput{
-		WorkDirOverride: *flagCwd,
-		ConfigPath:      *flagConfig,
-		Env:             env,
-	})
-	if err != nil {
-		fprintError(stderr, err)
+	// Determine if we need to load config (exec needs it, check doesn't)
+	cmdName := commandAndArgs[0]
 
-		return 1
+	var cfg Config
+	if cmdName == "check" {
+		cfg = DefaultConfig()
+	} else {
+		// Load config for exec command
+		cfg, err = LoadConfig(LoadConfigInput{
+			WorkDirOverride: *flagCwd,
+			ConfigPath:      *flagConfig,
+			Env:             env,
+		})
+		if err != nil {
+			fprintError(stderr, err)
+
+			return 1
+		}
 	}
 
 	// Create all commands
@@ -75,18 +103,7 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		}
 	}
 
-	commandAndArgs := globalFlags.Args()
-
-	// Show help: explicit --help or bare `agent-sandbox` with no args
-	if *flagHelp || len(commandAndArgs) == 0 {
-		printUsage(stdout, commands)
-
-		return 0
-	}
-
 	// Dispatch to command
-	cmdName := commandAndArgs[0]
-
 	cmd, ok := commandMap[cmdName]
 	if !ok {
 		// No command found - treat as implicit "exec"
@@ -203,4 +220,104 @@ var isTerminal = func() bool {
 // IsTerminal returns true if stdin is a terminal.
 func IsTerminal() bool {
 	return isTerminal()
+}
+
+// execFlags are flags that belong to the exec command, not global.
+var execFlags = map[string]bool{
+	"network": true, "docker": true, "dry-run": true, "debug": true,
+	"ro": true, "rw": true, "exclude": true, "cmd": true,
+}
+
+// insertExecIfNeeded scans args to find where to insert "exec" for implicit exec mode.
+// It inserts "exec" before the first exec flag or non-flag command argument.
+// Examples:
+//   - agent-sandbox echo hello → agent-sandbox exec echo hello
+//   - agent-sandbox --network=false echo hello → agent-sandbox exec --network=false echo hello
+//   - agent-sandbox --cwd /foo echo hello → agent-sandbox --cwd /foo exec echo hello
+func insertExecIfNeeded(args []string) []string {
+	if len(args) < 2 {
+		return args
+	}
+
+	// Find position where we should insert "exec"
+	// This is either:
+	// 1. Before the first exec flag (like --network)
+	// 2. Before the first non-flag that's not a command and not a flag value
+	insertPos := -1
+
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+
+		if strings.HasPrefix(arg, "-") {
+			// It's a flag - check if it's an exec flag
+			if isExecFlag(arg) {
+				insertPos = i
+
+				break
+			}
+			// It's a global flag, continue
+			continue
+		}
+
+		// Non-flag argument
+		// Check if previous arg was a flag that takes a value
+		if i > 1 && needsValue(args[i-1]) {
+			continue // This is a flag value, keep looking
+		}
+
+		// Found a command or argument
+		if arg == "check" || arg == "exec" {
+			return args // Already has explicit command
+		}
+
+		insertPos = i
+
+		break
+	}
+
+	if insertPos == -1 {
+		// No insertion point found
+		return args
+	}
+
+	// Insert "exec" at the found position
+	result := make([]string, 0, len(args)+1)
+	result = append(result, args[:insertPos]...)
+	result = append(result, "exec")
+	result = append(result, args[insertPos:]...)
+
+	return result
+}
+
+// isExecFlag checks if a flag string is an exec command flag.
+func isExecFlag(flagStr string) bool {
+	// Strip leading dashes
+	name := strings.TrimLeft(flagStr, "-")
+	// Handle --flag=value form
+	name, _, _ = strings.Cut(name, "=")
+
+	return execFlags[name]
+}
+
+// needsValue returns true if the flag requires a following value argument.
+func needsValue(flagStr string) bool {
+	// Handle --flag=value (doesn't need separate value)
+	if strings.Contains(flagStr, "=") {
+		return false
+	}
+
+	// Strip leading dashes
+	name := strings.TrimLeft(flagStr, "-")
+
+	// Global flags that need values
+	if name == "cwd" || name == "C" || name == "config" || name == "c" {
+		return true
+	}
+
+	// Exec flags that need values
+	if name == "ro" || name == "rw" || name == "exclude" || name == "cmd" {
+		return true
+	}
+
+	return false
 }

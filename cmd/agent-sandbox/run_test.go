@@ -206,7 +206,8 @@ func Test_Config_Invalid_JSON_Returns_Error(t *testing.T) {
 	c := NewCLITester(t)
 	c.WriteFile(".agent-sandbox.jsonc", `{invalid json}`)
 
-	_, stderr, code := c.Run("--help")
+	// Use exec command (not --help) because help doesn't load config per SPEC
+	_, stderr, code := c.Run("exec", "echo", "hello")
 
 	if code != 1 {
 		t.Errorf("expected exit code 1 for invalid config, got %d", code)
@@ -221,7 +222,8 @@ func Test_Config_Missing_Explicit_Config_Returns_Error(t *testing.T) {
 	c := NewCLITester(t)
 
 	// Reference a config file that doesn't exist - should error (per spec)
-	_, stderr, code := c.Run("--config", "nonexistent.jsonc", "--help")
+	// Use exec command (not --help) because help doesn't load config per SPEC
+	_, stderr, code := c.Run("--config", "nonexistent.jsonc", "exec", "echo", "hello")
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
@@ -263,7 +265,8 @@ func Test_Config_XDG_CONFIG_HOME_Invalid_JSON_Returns_Error(t *testing.T) {
 
 	c.Env["XDG_CONFIG_HOME"] = xdgConfig
 
-	_, stderr, code := c.Run("--help")
+	// Use exec command (not --help) because help doesn't load config per SPEC
+	_, stderr, code := c.Run("exec", "echo", "hello")
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
