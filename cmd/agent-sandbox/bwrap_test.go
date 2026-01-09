@@ -17,6 +17,10 @@ const (
 	bwrapTmpfs          = "--tmpfs"
 	devNull             = "/dev/null"
 	testHomeUserProject = "/home/user/project"
+	testSelfBinaryPath  = "/path/to/agent-sandbox"
+	testRuntimeBase     = "/run/abc123/agent-sandbox"
+	testUsrBinGit       = "/usr/bin/git"
+	testRealGitDest     = "/run/abc123/agent-sandbox/binaries/real/git"
 )
 
 // mustBwrapArgs calls BwrapArgs and fails the test if it returns an error.
@@ -1153,5 +1157,364 @@ func Test_GenerateExcludeMounts_Mixed_Paths_Only_Processes_Exclude(t *testing.T)
 	expected := []string{bwrapTmpfs, excludeDir}
 	if !slices.Equal(args, expected) {
 		t.Errorf("expected args %v, got %v", expected, args)
+	}
+}
+
+// ============================================================================
+// AddWrapperMounts tests
+// ============================================================================
+
+func Test_AddWrapperMounts_Returns_Args_Unchanged_When_WrapperSetup_Is_Nil(t *testing.T) {
+	t.Parallel()
+
+	args := []string{"--existing", "arg"}
+
+	result := AddWrapperMounts(args, nil, "/path/to/self", testRuntimeBase)
+
+	if !slices.Equal(args, result) {
+		t.Errorf("expected args unchanged, got: %v", result)
+	}
+}
+
+func Test_AddWrapperMounts_Mounts_Self_Binary_At_Wrap_Binary_Path(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		TempDir:      "/tmp/test",
+		RealBinaries: make(map[string][]BinaryPath),
+	}
+
+	args := AddWrapperMounts(nil, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Should have --ro-bind /path/to/agent-sandbox /run/abc123/agent-sandbox/binaries/wrap-binary
+	expectedDest := testRuntimeBase + "/binaries/wrap-binary"
+	found := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == testSelfBinaryPath && args[i+2] == expectedDest {
+			found = true
+
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("expected --ro-bind %s %s in args, got: %v", testSelfBinaryPath, expectedDest, args)
+	}
+}
+
+func Test_AddWrapperMounts_Mounts_Real_Binaries_At_Correct_Path(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		TempDir: "/tmp/test",
+		RealBinaries: map[string][]BinaryPath{
+			"git": {
+				{Path: testUsrBinGit, Resolved: testUsrBinGit, IsLink: false},
+			},
+		},
+	}
+
+	args := AddWrapperMounts(nil, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Should have --ro-bind /usr/bin/git /run/abc123/agent-sandbox/binaries/real/git
+	found := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == testUsrBinGit && args[i+2] == testRealGitDest {
+			found = true
+
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("expected --ro-bind %s %s in args, got: %v", testUsrBinGit, testRealGitDest, args)
+	}
+}
+
+func Test_AddWrapperMounts_Uses_First_Resolved_Path_For_Real_Binary(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		TempDir: "/tmp/test",
+		RealBinaries: map[string][]BinaryPath{
+			"git": {
+				{Path: testUsrBinGit, Resolved: "/usr/bin/real-git", IsLink: true},
+				{Path: "/bin/git", Resolved: "/usr/bin/real-git", IsLink: true},
+			},
+		},
+	}
+
+	args := AddWrapperMounts(nil, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Should use the first resolved path (/usr/bin/real-git)
+	found := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == "/usr/bin/real-git" && args[i+2] == testRealGitDest {
+			found = true
+
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("expected --ro-bind /usr/bin/real-git %s in args, got: %v", testRealGitDest, args)
+	}
+}
+
+func Test_AddWrapperMounts_Mounts_Multiple_Real_Binaries(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		TempDir: "/tmp/test",
+		RealBinaries: map[string][]BinaryPath{
+			"git": {
+				{Path: testUsrBinGit, Resolved: testUsrBinGit, IsLink: false},
+			},
+			"npm": {
+				{Path: "/usr/bin/npm", Resolved: "/usr/bin/npm", IsLink: false},
+			},
+		},
+	}
+
+	args := AddWrapperMounts(nil, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Check git binary mount
+	gitFound := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == testUsrBinGit && args[i+2] == testRealGitDest {
+			gitFound = true
+
+			break
+		}
+	}
+
+	if !gitFound {
+		t.Errorf("expected git real binary mount in args, got: %v", args)
+	}
+
+	// Check npm binary mount
+	npmDest := testRuntimeBase + "/binaries/real/npm"
+	npmFound := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == "/usr/bin/npm" && args[i+2] == npmDest {
+			npmFound = true
+
+			break
+		}
+	}
+
+	if !npmFound {
+		t.Errorf("expected npm real binary mount in args, got: %v", args)
+	}
+}
+
+func Test_AddWrapperMounts_Skips_Empty_Binary_Paths(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		TempDir: "/tmp/test",
+		RealBinaries: map[string][]BinaryPath{
+			"git": {}, // Empty paths
+		},
+	}
+
+	args := AddWrapperMounts(nil, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Should not have any mount for git
+	argsStr := strings.Join(args, " ")
+	if strings.Contains(argsStr, "/real/git") {
+		t.Errorf("should not mount empty binary paths, got: %v", args)
+	}
+}
+
+func Test_AddWrapperMounts_Mounts_Wrapper_Scripts_Readonly(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		TempDir:      "/tmp/test",
+		RealBinaries: make(map[string][]BinaryPath),
+		Mounts: []WrapperMount{
+			{Source: "/tmp/test/wrap-git", Destination: testUsrBinGit},
+			{Source: "/tmp/test/wrap-git", Destination: "/bin/git"},
+		},
+	}
+
+	args := AddWrapperMounts(nil, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Check first wrapper mount
+	usrBinFound := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == "/tmp/test/wrap-git" && args[i+2] == testUsrBinGit {
+			usrBinFound = true
+
+			break
+		}
+	}
+
+	if !usrBinFound {
+		t.Errorf("expected wrapper mount at %s, got: %v", testUsrBinGit, args)
+	}
+
+	// Check second wrapper mount
+	binFound := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == "/tmp/test/wrap-git" && args[i+2] == "/bin/git" {
+			binFound = true
+
+			break
+		}
+	}
+
+	if !binFound {
+		t.Errorf("expected wrapper mount at /bin/git, got: %v", args)
+	}
+}
+
+func Test_AddWrapperMounts_Path_Convention_Matches_Wrap_Binary_Lookup(t *testing.T) {
+	t.Parallel()
+
+	// The wrap-binary command finds real binaries at:
+	// selfPath, _ := os.Executable()
+	// selfDir := filepath.Dir(selfPath)
+	// realBinary := filepath.Join(selfDir, "real", cmdName)
+	//
+	// So if wrap-binary is at /run/abc123/agent-sandbox/binaries/wrap-binary
+	// and the command is "git", it looks for /run/abc123/agent-sandbox/binaries/real/git
+
+	setup := &WrapperSetup{
+		TempDir: "/tmp/test",
+		RealBinaries: map[string][]BinaryPath{
+			"git": {
+				{Path: testUsrBinGit, Resolved: testUsrBinGit, IsLink: false},
+			},
+		},
+	}
+
+	args := AddWrapperMounts(nil, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Find wrap-binary mount location
+	var wrapBinaryPath string
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == testSelfBinaryPath {
+			wrapBinaryPath = args[i+2]
+
+			break
+		}
+	}
+
+	if wrapBinaryPath == "" {
+		t.Fatalf("wrap-binary mount not found")
+	}
+
+	// Find git real binary mount location
+	var gitRealPath string
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+1] == testUsrBinGit {
+			gitRealPath = args[i+2]
+
+			break
+		}
+	}
+
+	if gitRealPath == "" {
+		t.Fatalf("git real binary mount not found")
+	}
+
+	// Verify the path convention:
+	// wrap-binary is at /run/abc123/agent-sandbox/binaries/wrap-binary
+	// real git should be at /run/abc123/agent-sandbox/binaries/real/git
+	wrapBinaryDir := filepath.Dir(wrapBinaryPath)
+	expectedGitPath := filepath.Join(wrapBinaryDir, "real", "git")
+
+	if gitRealPath != expectedGitPath {
+		t.Errorf("path convention mismatch:\n  wrap-binary: %s\n  git real: %s\n  expected git: %s",
+			wrapBinaryPath, gitRealPath, expectedGitPath)
+	}
+}
+
+func Test_AddWrapperMounts_Preserves_Existing_Args(t *testing.T) {
+	t.Parallel()
+
+	setup := &WrapperSetup{
+		TempDir:      "/tmp/test",
+		RealBinaries: make(map[string][]BinaryPath),
+	}
+
+	existing := []string{"--existing", "arg1", "arg2"}
+
+	args := AddWrapperMounts(existing, setup, testSelfBinaryPath, testRuntimeBase)
+
+	// Verify existing args are preserved
+	if len(args) < 3 || args[0] != "--existing" || args[1] != "arg1" || args[2] != "arg2" {
+		t.Errorf("existing args not preserved, got: %v", args)
+	}
+}
+
+func Test_AddWrapperMounts_Full_Setup_With_All_Components(t *testing.T) {
+	t.Parallel()
+
+	const (
+		testFullRuntimeBase = "/run/xyz789/agent-sandbox"
+		testFullSelfBinary  = "/usr/local/bin/agent-sandbox"
+	)
+
+	setup := &WrapperSetup{
+		TempDir: "/tmp/test-wrappers",
+		RealBinaries: map[string][]BinaryPath{
+			"git": {
+				{Path: testUsrBinGit, Resolved: testUsrBinGit, IsLink: false},
+				{Path: "/bin/git", Resolved: testUsrBinGit, IsLink: true},
+			},
+			"npm": {
+				{Path: "/usr/bin/npm", Resolved: "/usr/bin/npm", IsLink: false},
+			},
+		},
+		Mounts: []WrapperMount{
+			{Source: "/tmp/test-wrappers/wrap-git", Destination: testUsrBinGit},
+			{Source: "/tmp/test-wrappers/wrap-git", Destination: "/bin/git"},
+			{Source: "/tmp/test-wrappers/wrap-npm", Destination: "/usr/bin/npm"},
+			{Source: "/tmp/test-wrappers/deny-binary", Destination: "/bin/rm"},
+		},
+	}
+
+	args := AddWrapperMounts(nil, setup, testFullSelfBinary, testFullRuntimeBase)
+
+	// Verify all expected mounts are present
+	expectedMounts := []struct {
+		src  string
+		dest string
+	}{
+		{testFullSelfBinary, testFullRuntimeBase + "/binaries/wrap-binary"},
+		{testUsrBinGit, testFullRuntimeBase + "/binaries/real/git"},
+		{"/usr/bin/npm", testFullRuntimeBase + "/binaries/real/npm"},
+		{"/tmp/test-wrappers/wrap-git", testUsrBinGit},
+		{"/tmp/test-wrappers/wrap-git", "/bin/git"},
+		{"/tmp/test-wrappers/wrap-npm", "/usr/bin/npm"},
+		{"/tmp/test-wrappers/deny-binary", "/bin/rm"},
+	}
+
+	for _, expected := range expectedMounts {
+		found := false
+
+		for i := range len(args) - 2 {
+			if args[i] == bwrapRoBind && args[i+1] == expected.src && args[i+2] == expected.dest {
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			t.Errorf("missing mount: --ro-bind %s %s\nargs: %v", expected.src, expected.dest, args)
+		}
 	}
 }

@@ -105,9 +105,10 @@ func isExecutable(info os.FileInfo) bool {
 
 // WrapperSetup contains the temp directory and mount info for wrappers.
 type WrapperSetup struct {
-	TempDir string         // Host temp directory
-	Mounts  []WrapperMount // Mounts to add to bwrap
-	Cleanup func()         // Call to remove temp dir
+	TempDir      string                  // Host temp directory
+	Mounts       []WrapperMount          // Mounts to add to bwrap
+	RealBinaries map[string][]BinaryPath // Command name -> binary locations for mounting real binaries
+	Cleanup      func()                  // Call to remove temp dir
 }
 
 // WrapperMount describes a single mount for a wrapper script.
@@ -128,8 +129,9 @@ func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]Bin
 	}
 
 	setup := &WrapperSetup{
-		TempDir: tempDir,
-		Cleanup: func() { _ = os.RemoveAll(tempDir) },
+		TempDir:      tempDir,
+		RealBinaries: make(map[string][]BinaryPath),
+		Cleanup:      func() { _ = os.RemoveAll(tempDir) },
 	}
 
 	// Create deny-binary script (shared by all blocked commands)
@@ -179,6 +181,9 @@ func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]Bin
 				})
 			}
 
+			// Track real binary locations for mounting
+			setup.RealBinaries[cmdName] = paths
+
 		case CommandRuleScript:
 			// Custom script wrapper
 			wrapperScript := filepath.Join(tempDir, "wrap-"+cmdName)
@@ -196,6 +201,9 @@ func GenerateWrappers(commands map[string]CommandRule, binPaths map[string][]Bin
 					Destination: p.Path,
 				})
 			}
+
+			// Track real binary locations for mounting
+			setup.RealBinaries[cmdName] = paths
 
 		case CommandRuleUnset:
 			// No rule set, skip

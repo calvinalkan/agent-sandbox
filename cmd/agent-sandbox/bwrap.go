@@ -281,3 +281,53 @@ func selfBinaryArgs() ([]string, error) {
 	// Mount at standard location inside the sandbox
 	return []string{"--ro-bind", self, SandboxBinaryPath}, nil
 }
+
+// AddWrapperMounts generates bwrap arguments to mount command wrappers into the sandbox.
+//
+// Directory structure inside sandbox (where runtimeBase is e.g. /run/abc123/agent-sandbox):
+//
+//	<runtimeBase>/binaries/
+//	├── wrap-binary          # agent-sandbox binary for wrap-binary command
+//	└── real/
+//	    ├── git              # real git binary
+//	    └── npm              # real npm binary
+//
+// The wrapper scripts (in wrapperSetup.Mounts) are mounted over the original binary locations.
+// The wrap-binary command finds real binaries via path convention: ../real/<cmdName>.
+//
+// Returns the args slice with wrapper mounts appended.
+// Returns args unchanged if wrapperSetup is nil (no wrappers configured).
+func AddWrapperMounts(args []string, wrapperSetup *WrapperSetup, selfBinary string, runtimeBase string) []string {
+	if wrapperSetup == nil {
+		return args
+	}
+
+	// runtimeBase is chosen once per exec invocation (before wrapper script generation)
+	// so wrapper scripts can exec an absolute path that is guaranteed to exist inside the sandbox.
+	binDir := filepath.Join(runtimeBase, "binaries")
+	realDir := filepath.Join(binDir, "real")
+
+	// Mount agent-sandbox binary for wrap-binary command
+	sandboxWrapBinaryPath := filepath.Join(binDir, "wrap-binary")
+	args = append(args, "--ro-bind", selfBinary, sandboxWrapBinaryPath)
+
+	// Mount real binaries
+	for cmdName, paths := range wrapperSetup.RealBinaries {
+		if len(paths) == 0 {
+			continue
+		}
+
+		// Use the first resolved path as the canonical real binary
+		realPath := paths[0].Resolved
+		destPath := filepath.Join(realDir, cmdName)
+		args = append(args, "--ro-bind", realPath, destPath)
+	}
+
+	// Mount wrapper scripts over original locations
+	for _, mount := range wrapperSetup.Mounts {
+		// Mount read-only so sandboxed processes cannot tamper with wrapper behavior.
+		args = append(args, "--ro-bind", mount.Source, mount.Destination)
+	}
+
+	return args
+}
