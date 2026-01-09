@@ -664,8 +664,8 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 	var agentCmd string
 	switch agentRunner {
 	case "claude":
-		// Use agent-sandbox wrapper with dangerously-skip-permissions
-		agentCmd = fmt.Sprintf("cd %s && agent-sandbox claude --dangerously-skip-permissions \"$(cat .wt/prompt.md)\"", wtPath)
+		// Use agent-sandbox wrapper with dangerously-skip-permissions and extended thinking
+		agentCmd = fmt.Sprintf("cd %s && agent-sandbox claude --dangerously-skip-permissions --settings '{\"alwaysThinkingEnabled\": true}' \"$(cat .wt/prompt.md)\"", wtPath)
 	default: // "pi"
 		agentCmd = fmt.Sprintf("cd %s && agent-sandbox pi @.wt/prompt.md", wtPath)
 	}
