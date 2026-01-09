@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -62,28 +65,30 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				debug = NewDebugLogger(nil)
 			}
 
+			// 1. Platform validation
 			err := checkPlatformPrerequisites()
 			if err != nil {
 				return err
 			}
 
-			// Validate home directory early (before any path resolution)
+			// 2. Validate home directory early (before any path resolution)
 			// This is required because @base and many presets reference home paths
 			homeDir, err := GetHomeDir(env)
 			if err != nil {
 				return err
 			}
 
+			// 3. Validate command exists
 			if len(args) == 0 {
 				return ErrNoCommand
 			}
 
-			// Output config loading debug info
+			// 4. Output config loading debug info
 			if cfg != nil {
 				debugConfigLoading(debug, cfg)
 			}
 
-			// Apply CLI flags to config (highest priority)
+			// 5. Apply CLI flags to config (highest priority)
 			if cfg != nil {
 				err = applyExecFlags(cfg, flags)
 				if err != nil {
@@ -94,11 +99,14 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				debugConfigMerge(debug, cfg, flags)
 			}
 
-			// Expand presets with context
+			// 6. Get loaded config paths for @base preset protection
+			loadedConfigPaths := getLoadedConfigPaths(cfg)
+
+			// 7. Expand presets with context
 			presetCtx := PresetContext{
-				HomeDir: homeDir,
-				WorkDir: cfg.EffectiveCwd,
-				// LoadedConfigPaths: would be set by config loading in full implementation
+				HomeDir:           homeDir,
+				WorkDir:           cfg.EffectiveCwd,
+				LoadedConfigPaths: loadedConfigPaths,
 			}
 
 			presetPaths, err := ExpandPresets(cfg.Filesystem.Presets, presetCtx)
@@ -106,11 +114,14 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				return err
 			}
 
-			// Resolve all paths
+			// Debug: show preset expansion
+			DebugPresetExpansion(debug, cfg.Filesystem.Presets, getAppliedPresets(cfg.Filesystem.Presets), getRemovedPresets(cfg.Filesystem.Presets))
+
+			// 8. Resolve all paths from all layers
 			resolvedPaths, err := ResolvePaths(&ResolvePathsInput{
 				Preset:  PathLayerInput(presetPaths),
-				Global:  PathLayerInput{}, // global config paths handled by config loading
-				Project: PathLayerInput{}, // project config paths handled by config loading
+				Global:  PathLayerInput{}, // global config paths are included in merged cfg.Filesystem
+				Project: PathLayerInput{}, // project config paths are included in merged cfg.Filesystem
 				CLI: PathLayerInput{
 					Ro:      cfg.Filesystem.Ro,
 					Rw:      cfg.Filesystem.Rw,
@@ -123,22 +134,72 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				return err
 			}
 
-			// Validate working directory is not excluded
+			// Debug: show path resolution results
+			DebugPathResolution(debug, resolvedPaths)
+
+			// 9. Validate working directory is not excluded
 			err = ValidateWorkDirNotExcluded(resolvedPaths, cfg.EffectiveCwd)
 			if err != nil {
 				return err
 			}
 
-			// Apply specificity rules and sort by mount order
+			// 10. Apply specificity rules and sort by mount order
 			sortedPaths := ResolveAndSort(resolvedPaths)
 
-			// Generate bwrap arguments
+			// 11. Set up temp directory for exclude mounts and wrappers
+			tempRes, err := SetupTempDir()
+			if err != nil {
+				return err
+			}
+			defer tempRes.Cleanup()
+
+			// 12. Generate bwrap arguments for filesystem mounts
 			bwrapArgs, err := BwrapArgs(sortedPaths, cfg)
 			if err != nil {
 				return err
 			}
 
-			// Check for dry-run mode
+			// 13. Add exclude path mounts
+			excludeArgs := GenerateExcludeMounts(sortedPaths, tempRes.EmptyFile)
+			bwrapArgs = append(bwrapArgs, excludeArgs...)
+
+			// 14. Set up command wrappers
+			// Debug: show command wrapper configuration
+			DebugCommandWrappers(debug, cfg.Commands)
+
+			// Find binary locations for wrapped commands
+			binPaths := make(map[string][]BinaryPath)
+			for cmdName := range cfg.Commands {
+				binPaths[cmdName] = BinaryLocations(cmdName, env)
+			}
+
+			// Generate random runtime base path for sandbox
+			runtimeBase := "/run/" + randomString8() + "/agent-sandbox"
+			sandboxWrapBinaryPath := filepath.Join(runtimeBase, "binaries", "wrap-binary")
+
+			// Generate wrapper scripts
+			wrapperSetup, err := GenerateWrappers(cfg.Commands, binPaths, sandboxWrapBinaryPath)
+			if err != nil {
+				return err
+			}
+
+			if wrapperSetup != nil {
+				defer wrapperSetup.Cleanup()
+			}
+
+			// 15. Get self binary path for mounting into sandbox
+			selfBinary, err := getSelfBinaryPath()
+			if err != nil {
+				return err
+			}
+
+			// 16. Add wrapper mounts to bwrap args
+			bwrapArgs = AddWrapperMounts(bwrapArgs, wrapperSetup, selfBinary, runtimeBase)
+
+			// Debug: show final bwrap arguments
+			DebugBwrapArgs(debug, bwrapArgs)
+
+			// 17. Check for dry-run mode
 			dryRun, _ := flags.GetBool("dry-run")
 			if dryRun {
 				printDryRunOutput(stdout, bwrapArgs, args)
@@ -146,7 +207,7 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				return nil
 			}
 
-			// Execute the command in the sandbox
+			// 18. Execute the command in the sandbox
 			exitCode, err := ExecuteSandbox(ctx, bwrapArgs, args, env, stdin, stdout, stderr)
 			if err != nil {
 				return err
@@ -344,4 +405,83 @@ func isShellSafeChar(c rune) bool {
 		(c >= 'A' && c <= 'Z') ||
 		(c >= '0' && c <= '9') ||
 		c == '-' || c == '_' || c == '.' || c == '/' || c == ':' || c == '='
+}
+
+// getLoadedConfigPaths returns the paths of all loaded config files.
+// This is used to protect config files from modification inside the sandbox.
+func getLoadedConfigPaths(cfg *Config) []string {
+	if cfg == nil || cfg.LoadedConfigFiles == nil {
+		return nil
+	}
+
+	paths := make([]string, 0, len(cfg.LoadedConfigFiles))
+	for _, path := range cfg.LoadedConfigFiles {
+		paths = append(paths, path)
+	}
+
+	return paths
+}
+
+// getAppliedPresets returns the list of presets that were applied (not negated).
+func getAppliedPresets(presets []string) []string {
+	// Always start with @all as the implicit default
+	applied := []string{"@all"}
+	seen := map[string]bool{"@all": true}
+
+	for _, preset := range presets {
+		if strings.HasPrefix(preset, "!") {
+			continue // Skip negated presets
+		}
+
+		if !seen[preset] {
+			seen[preset] = true
+			applied = append(applied, preset)
+		}
+	}
+
+	return applied
+}
+
+// getRemovedPresets returns the list of presets that were removed via negation.
+func getRemovedPresets(presets []string) []string {
+	var removed []string
+
+	for _, preset := range presets {
+		if after, ok := strings.CutPrefix(preset, "!"); ok {
+			removed = append(removed, after)
+		}
+	}
+
+	return removed
+}
+
+// randomString8 generates a random 8-byte (16 hex character) string.
+// Used to create unique runtime paths for sandbox isolation.
+func randomString8() string {
+	bytes := make([]byte, 8)
+
+	_, err := rand.Read(bytes)
+	if err != nil {
+		// Fall back to a simple timestamp-based string if crypto/rand fails
+		return fmt.Sprintf("%x", os.Getpid())
+	}
+
+	return hex.EncodeToString(bytes)
+}
+
+// getSelfBinaryPath returns the absolute path to the agent-sandbox binary.
+// It resolves symlinks to get the real binary path.
+func getSelfBinaryPath() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrSelfBinaryNotFound, err)
+	}
+
+	// Resolve any symlinks to get the real binary path
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return "", fmt.Errorf("%w: cannot resolve symlinks: %w", ErrSelfBinaryNotFound, err)
+	}
+
+	return self, nil
 }

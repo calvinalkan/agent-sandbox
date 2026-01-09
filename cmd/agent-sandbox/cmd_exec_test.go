@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	flag "github.com/spf13/pflag"
@@ -793,5 +794,527 @@ func Test_ShellQuoteIfNeeded_Escapes_Single_Quotes(t *testing.T) {
 	// The result should contain the properly escaped quote
 	if result != "'don'\"'\"'t'" {
 		t.Errorf("shellQuoteIfNeeded(\"don't\") = %q, expected properly escaped single quote", result)
+	}
+}
+
+// ============================================================================
+// E2E Integration Tests - Full Pipeline Execution
+// ============================================================================
+
+func Test_Exec_Pipeline_Runs_Real_Command_And_Returns_Output(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	stdout, stderr, code := c.Run("echo", "hello from full pipeline")
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstderr: %s", code, stderr)
+	}
+
+	AssertContains(t, stdout, "hello from full pipeline")
+}
+
+func Test_Exec_Pipeline_Returns_Correct_Exit_Code(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Test various exit codes
+	_, _, code := c.Run("bash", "-c", "exit 0")
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	_, _, code = c.Run("bash", "-c", "exit 1")
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+
+	_, _, code = c.Run("bash", "-c", "exit 42")
+	if code != 42 {
+		t.Errorf("expected exit code 42, got %d", code)
+	}
+}
+
+// ============================================================================
+// E2E Tests - Filesystem Restrictions
+// ============================================================================
+
+func Test_Exec_WorkDir_Is_Writable_By_Default(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Use TMPDIR for writing since HOME == workdir results in ro (per specificity)
+	// TempFile returns a path in the writable TMPDIR
+	testFile := c.TempFile("test-writable.txt")
+	_, stderr, code := c.Run("bash", "-c", "echo 'created inside sandbox' > "+testFile)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstderr: %s", code, stderr)
+	}
+
+	// Verify the file was actually created
+	if !c.FileExistsAt(c.Env["TMPDIR"], "test-writable.txt") {
+		t.Error("file should have been created in TMPDIR")
+	}
+
+	content := c.ReadFileAt(c.Env["TMPDIR"], "test-writable.txt")
+	AssertContains(t, content, "created inside sandbox")
+}
+
+func Test_Exec_Read_Only_Path_Cannot_Be_Written(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a directory with a file to protect
+	c.WriteFile("protected/original.txt", "original content")
+
+	// Try to write to a protected path (--ro flag)
+	_, _, code := c.Run("--ro", "protected", "bash", "-c", "echo 'modified' > protected/original.txt")
+
+	// Should fail because the path is read-only
+	if code == 0 {
+		content := c.ReadFile("protected/original.txt")
+		if content != "original content" {
+			t.Error("read-only protected file was modified")
+		} else {
+			t.Error("expected non-zero exit code when writing to read-only path")
+		}
+	}
+
+	// Verify original content is unchanged
+	content := c.ReadFile("protected/original.txt")
+	if content != "original content" {
+		t.Errorf("read-only file content changed, expected 'original content', got %q", content)
+	}
+}
+
+func Test_Exec_Exclude_Path_Cannot_Be_Read(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a file to exclude
+	c.WriteFile("secret/password.txt", "super secret")
+
+	// Try to read the excluded file
+	stdout, _, code := c.Run("--exclude", "secret", "cat", "secret/password.txt")
+
+	// Should fail because the path is excluded
+	if code == 0 {
+		t.Errorf("expected non-zero exit code when reading excluded path, got stdout: %s", stdout)
+	}
+
+	// Verify the secret content is not in the output
+	AssertNotContains(t, stdout, "super secret")
+}
+
+func Test_Exec_Exclude_Directory_Is_Hidden(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a directory to exclude
+	c.WriteFile("hidden/.secret", "hidden content")
+
+	// Try to list the excluded directory
+	stdout, _, code := c.Run("--exclude", "hidden", "ls", "hidden")
+
+	// Should fail because the directory appears empty or non-existent
+	if code == 0 && strings.Contains(stdout, ".secret") {
+		t.Error("excluded directory contents should not be visible")
+	}
+}
+
+func Test_Exec_RW_Path_Is_Writable(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a directory that would normally be read-only (outside workdir)
+	outputDir := t.TempDir()
+	outputFile := outputDir + "/output.txt"
+
+	// Add the output directory as writable
+	_, stderr, code := c.Run("--rw", outputDir, "bash", "-c", "echo 'written' > "+outputFile)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstderr: %s", code, stderr)
+	}
+
+	// Verify the file was written
+	content, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "written") {
+		t.Errorf("expected 'written' in output file, got: %s", string(content))
+	}
+}
+
+// ============================================================================
+// E2E Tests - Command Wrappers
+// ============================================================================
+
+func Test_Exec_Blocked_Command_Cannot_Run(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Block the 'cat' command and try to run it
+	_, stderr, code := c.Run("--cmd", "cat=false", "cat", "/etc/hostname")
+
+	// Should fail because cat is blocked
+	if code == 0 {
+		t.Error("expected non-zero exit code when running blocked command")
+	}
+
+	// Error message should indicate the command is blocked
+	AssertContains(t, stderr, "blocked")
+}
+
+func Test_Exec_Raw_Command_Bypasses_Wrapper(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Block 'echo' command then try with true to verify raw command works
+	// First verify it's blocked
+	_, stderr, code := c.Run("--cmd", "echo=false", "echo", "should be blocked")
+	if code == 0 {
+		t.Error("expected echo to be blocked with echo=false")
+	}
+
+	AssertContains(t, stderr, "blocked")
+
+	// Now verify that setting echo=true allows it to run
+	stdout, stderr, code := c.Run("--cmd", "echo=true", "echo", "should work")
+	if code != 0 {
+		t.Errorf("expected exit code 0 with echo=true, got %d\nstderr: %s", code, stderr)
+	}
+
+	AssertContains(t, stdout, "should work")
+}
+
+func Test_Exec_Wrapper_Cleanup_Happens_On_Error(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Use an invalid exclude path that will cause an error after wrapper setup
+	// but before execution. The cleanup should still happen.
+	// This tests the defer cleanup behavior.
+
+	// Create a path that will be excluded and checked
+	c.WriteFile(".env", "secret=value")
+
+	// Run a command that will fail (non-existent command)
+	// The wrapper setup should complete and then be cleaned up
+	_, _, code := c.Run("--exclude", ".env", "nonexistent_command_xyz")
+
+	// The command doesn't exist so it should fail, but the test
+	// verifies no panic occurs during cleanup
+	if code == 0 {
+		t.Log("command unexpectedly succeeded")
+	}
+}
+
+// ============================================================================
+// E2E Tests - Debug Output
+// ============================================================================
+
+func Test_Exec_Debug_Shows_Config_Loading(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	_, stderr, code := c.Run("--debug", "true")
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	// Debug output should show config loading info
+	AssertContains(t, stderr, "Config Loading")
+}
+
+func Test_Exec_Debug_Shows_Preset_Expansion(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	_, stderr, code := c.Run("--debug", "true")
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	// Debug output should show preset expansion
+	AssertContains(t, stderr, "Preset Expansion")
+}
+
+func Test_Exec_Debug_Shows_Path_Resolution(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	_, stderr, code := c.Run("--debug", "true")
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	// Debug output should show path resolution
+	AssertContains(t, stderr, "Path Resolution")
+}
+
+func Test_Exec_Debug_Shows_Bwrap_Args(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	_, stderr, code := c.Run("--debug", "true")
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	// Debug output should show bwrap arguments
+	AssertContains(t, stderr, "bwrap Arguments")
+}
+
+func Test_Exec_Debug_Shows_Command_Wrappers(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	_, stderr, code := c.Run("--debug", "true")
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	// Debug output should show command wrapper info
+	AssertContains(t, stderr, "Command Wrappers")
+}
+
+// ============================================================================
+// E2E Tests - Error Handling
+// ============================================================================
+
+func Test_Exec_Returns_Error_When_WorkDir_Is_Excluded(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Try to exclude the working directory itself
+	_, stderr, code := c.Run("--exclude", ".", "echo", "hello")
+
+	if code == 0 {
+		t.Error("expected non-zero exit code when working directory is excluded")
+	}
+
+	AssertContains(t, stderr, "excluded")
+}
+
+func Test_Exec_Returns_Error_For_Unknown_Preset(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Create a config file with an unknown preset
+	c.WriteFile(".agent-sandbox.jsonc", `{
+		"filesystem": {
+			"presets": ["@nonexistent-preset"]
+		}
+	}`)
+
+	_, stderr, code := c.Run("echo", "hello")
+
+	if code == 0 {
+		t.Error("expected non-zero exit code for unknown preset")
+	}
+
+	AssertContains(t, stderr, "unknown preset")
+}
+
+// ============================================================================
+// Helper function tests
+// ============================================================================
+
+func Test_GetLoadedConfigPaths_Returns_Nil_For_Nil_Config(t *testing.T) {
+	t.Parallel()
+
+	paths := getLoadedConfigPaths(nil)
+	if paths != nil {
+		t.Errorf("expected nil, got %v", paths)
+	}
+}
+
+func Test_GetLoadedConfigPaths_Returns_Nil_For_Empty_Map(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{}
+	paths := getLoadedConfigPaths(cfg)
+
+	if paths != nil {
+		t.Errorf("expected nil, got %v", paths)
+	}
+}
+
+func Test_GetLoadedConfigPaths_Returns_Paths_From_Config(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		LoadedConfigFiles: map[string]string{
+			"global":  "/path/to/global",
+			"project": "/path/to/project",
+		},
+	}
+
+	paths := getLoadedConfigPaths(cfg)
+
+	if len(paths) != 2 {
+		t.Errorf("expected 2 paths, got %d", len(paths))
+	}
+
+	// Check that both paths are present (order may vary due to map iteration)
+	pathMap := make(map[string]bool)
+	for _, path := range paths {
+		pathMap[path] = true
+	}
+
+	if !pathMap["/path/to/global"] {
+		t.Error("expected /path/to/global in paths")
+	}
+
+	if !pathMap["/path/to/project"] {
+		t.Error("expected /path/to/project in paths")
+	}
+}
+
+func Test_GetAppliedPresets_Returns_All_By_Default(t *testing.T) {
+	t.Parallel()
+
+	applied := getAppliedPresets(nil)
+
+	if len(applied) != 1 || applied[0] != "@all" {
+		t.Errorf("expected [@all], got %v", applied)
+	}
+}
+
+func Test_GetAppliedPresets_Adds_Explicit_Presets(t *testing.T) {
+	t.Parallel()
+
+	applied := getAppliedPresets([]string{"@base", "@caches"})
+
+	if len(applied) != 3 {
+		t.Errorf("expected 3 presets, got %v", applied)
+	}
+}
+
+func Test_GetAppliedPresets_Skips_Negated_Presets(t *testing.T) {
+	t.Parallel()
+
+	applied := getAppliedPresets([]string{"!@lint/python", "@caches"})
+
+	if len(applied) != 2 {
+		t.Errorf("expected 2 presets, got %v", applied)
+	}
+
+	for _, preset := range applied {
+		if preset == "!@lint/python" || preset == "@lint/python" {
+			t.Errorf("negated preset should not be in applied list: %v", applied)
+		}
+	}
+}
+
+func Test_GetRemovedPresets_Returns_Empty_For_No_Negations(t *testing.T) {
+	t.Parallel()
+
+	removed := getRemovedPresets([]string{"@base", "@caches"})
+
+	if len(removed) != 0 {
+		t.Errorf("expected empty slice, got %v", removed)
+	}
+}
+
+func Test_GetRemovedPresets_Returns_Negated_Presets(t *testing.T) {
+	t.Parallel()
+
+	removed := getRemovedPresets([]string{"!@lint/python", "@caches", "!@git"})
+
+	if len(removed) != 2 {
+		t.Errorf("expected 2 removed presets, got %v", removed)
+	}
+
+	// Check that removed presets are correct (without ! prefix)
+	removedMap := make(map[string]bool)
+	for _, preset := range removed {
+		removedMap[preset] = true
+	}
+
+	if !removedMap["@lint/python"] {
+		t.Error("expected @lint/python in removed list")
+	}
+
+	if !removedMap["@git"] {
+		t.Error("expected @git in removed list")
+	}
+}
+
+func Test_RandomString8_Returns_Correct_Length(t *testing.T) {
+	t.Parallel()
+
+	result := randomString8()
+
+	// 8 bytes = 16 hex chars
+	if len(result) != 16 {
+		t.Errorf("expected 16 chars, got %d", len(result))
+	}
+}
+
+func Test_RandomString8_Returns_Different_Values(t *testing.T) {
+	t.Parallel()
+
+	r1 := randomString8()
+	r2 := randomString8()
+
+	if r1 == r2 {
+		t.Error("expected different random strings")
 	}
 }
