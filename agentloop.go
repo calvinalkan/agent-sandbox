@@ -29,6 +29,7 @@ var (
 	numAgentsMu sync.RWMutex
 	draining    bool
 	drainingMu  sync.RWMutex
+	agentRunner string // "pi" or "claude"
 )
 
 func init() {
@@ -77,7 +78,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  run    -n NUM <prompt-file>  Run in foreground (for debugging)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Options:")
-	fmt.Fprintln(os.Stderr, "  -n NUM  number of parallel agents (default 1)")
+	fmt.Fprintln(os.Stderr, "  -n NUM          number of parallel agents (default 1)")
+	fmt.Fprintln(os.Stderr, "  --runner NAME   agent runner: 'pi' or 'claude' (default 'pi')")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "The prompt file should contain $$ID which gets replaced with the ticket ID.")
 }
@@ -87,7 +89,13 @@ func printUsage() {
 func cmdStart(args []string) {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	numAgents := fs.Int("n", 1, "number of parallel agents")
+	runner := fs.String("runner", "pi", "agent runner: 'pi' or 'claude'")
 	fs.Parse(args)
+
+	if *runner != "pi" && *runner != "claude" {
+		fmt.Fprintf(os.Stderr, "error: invalid runner '%s', must be 'pi' or 'claude'\n", *runner)
+		os.Exit(1)
+	}
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "error: prompt file required")
@@ -121,7 +129,7 @@ func cmdStart(args []string) {
 		executable = os.Args[0]
 	}
 
-	daemonArgs := []string{"daemon", "-n", strconv.Itoa(*numAgents), absPrompt}
+	daemonArgs := []string{"daemon", "-n", strconv.Itoa(*numAgents), "--runner", *runner, absPrompt}
 	cmd := exec.Command(executable, daemonArgs...)
 	cmd.Dir = cwd
 
@@ -283,7 +291,13 @@ func cmdDrain() {
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	n := fs.Int("n", 1, "number of parallel agents")
+	runner := fs.String("runner", "pi", "agent runner: 'pi' or 'claude'")
 	fs.Parse(args)
+
+	if *runner != "pi" && *runner != "claude" {
+		fmt.Fprintf(os.Stderr, "error: invalid runner '%s', must be 'pi' or 'claude'\n", *runner)
+		os.Exit(1)
+	}
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "error: prompt file required")
@@ -296,6 +310,7 @@ func cmdRun(args []string) {
 		os.Exit(1)
 	}
 
+	agentRunner = *runner
 	setNumAgents(*n)
 
 	log.SetFlags(log.Ltime)
@@ -317,7 +332,13 @@ func cmdRun(args []string) {
 func cmdDaemon(args []string) {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	n := fs.Int("n", 1, "number of parallel agents")
+	runner := fs.String("runner", "pi", "agent runner: 'pi' or 'claude'")
 	fs.Parse(args)
+
+	if *runner != "pi" && *runner != "claude" {
+		fmt.Fprintf(os.Stderr, "error: invalid runner '%s', must be 'pi' or 'claude'\n", *runner)
+		os.Exit(1)
+	}
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "error: prompt file required")
@@ -325,6 +346,7 @@ func cmdDaemon(args []string) {
 	}
 	promptFile := fs.Arg(0)
 
+	agentRunner = *runner
 	setNumAgents(*n)
 
 	log.SetFlags(log.Ltime)
@@ -607,13 +629,22 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 	}
 
 	windowName := "ticket-" + ticketID
-	piCmd := fmt.Sprintf("cd %s && pi @.wt/prompt.md", wtPath)
+
+	// Build the agent command based on runner type
+	var agentCmd string
+	switch agentRunner {
+	case "claude":
+		// Use claude with the prompt file via stdin redirection
+		agentCmd = fmt.Sprintf("cd %s && claude < .wt/prompt.md", wtPath)
+	default: // "pi"
+		agentCmd = fmt.Sprintf("cd %s && pi @.wt/prompt.md", wtPath)
+	}
 
 	var cmd *exec.Cmd
 	if tmuxSessionExists() {
-		cmd = exec.Command("tmux", "new-window", "-t", tmuxSession, "-n", windowName, piCmd)
+		cmd = exec.Command("tmux", "new-window", "-t", tmuxSession, "-n", windowName, agentCmd)
 	} else {
-		cmd = exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-n", windowName, piCmd)
+		cmd = exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-n", windowName, agentCmd)
 		log.Printf("created tmux session: %s", tmuxSession)
 	}
 
@@ -667,7 +698,7 @@ func cleanupDeadAgents() {
 		status := getTicketStatus(ticketID)
 		if status == "closed" && !branchExists(branchName) {
 			log.Printf("agent done: %s", formatTicketWithTitle(ticketID))
-			killPiInPane(pid)
+			killAgentInPane(pid)
 			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
 			continue
 		}
@@ -679,14 +710,19 @@ func branchExists(branchName string) bool {
 	return cmd.Run() == nil
 }
 
-func killPiInPane(shellPid string) {
-	pgrepCmd := exec.Command("pgrep", "-P", shellPid, "-x", "pi")
-	var out bytes.Buffer
-	pgrepCmd.Stdout = &out
-	if pgrepCmd.Run() == nil {
-		var pid int
-		if _, err := fmt.Sscanf(strings.TrimSpace(out.String()), "%d", &pid); err == nil {
-			syscall.Kill(pid, syscall.SIGTERM)
+func killAgentInPane(shellPid string) {
+	// Try to kill either pi or claude process
+	processNames := []string{"pi", "claude"}
+	for _, name := range processNames {
+		pgrepCmd := exec.Command("pgrep", "-P", shellPid, "-x", name)
+		var out bytes.Buffer
+		pgrepCmd.Stdout = &out
+		if pgrepCmd.Run() == nil {
+			var pid int
+			if _, err := fmt.Sscanf(strings.TrimSpace(out.String()), "%d", &pid); err == nil {
+				syscall.Kill(pid, syscall.SIGTERM)
+				return
+			}
 		}
 	}
 }
