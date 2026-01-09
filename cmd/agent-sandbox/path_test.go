@@ -1568,3 +1568,275 @@ func Test_ResolvePaths_Multiple_Globs_Same_Pattern(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// ValidateWorkDirNotExcluded tests
+// ============================================================================
+
+func Test_ValidateWorkDirNotExcluded_Returns_Error_When_WorkDir_Equals_Excluded_Path(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "excluded")
+	mustCreateDir(t, workDir)
+
+	paths := []ResolvedPath{
+		{Resolved: workDir, Access: PathAccessExclude, Source: PathSourceCLI},
+	}
+
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err == nil {
+		t.Fatal("expected error when workDir equals excluded path")
+	}
+
+	if !errors.Is(err, ErrWorkDirExcluded) {
+		t.Errorf("expected ErrWorkDirExcluded, got: %v", err)
+	}
+
+	// Error should include both paths
+	AssertContains(t, err.Error(), workDir)
+	// Error should suggest fix
+	AssertContains(t, err.Error(), "change directory or remove exclusion")
+}
+
+func Test_ValidateWorkDirNotExcluded_Returns_Error_When_WorkDir_Is_Subdirectory_Of_Excluded(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	excludedPath := filepath.Join(dir, "excluded")
+	workDir := filepath.Join(excludedPath, "subdir", "deep")
+	mustCreateDir(t, workDir)
+
+	paths := []ResolvedPath{
+		{Resolved: excludedPath, Access: PathAccessExclude, Source: PathSourceCLI},
+	}
+
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err == nil {
+		t.Fatal("expected error when workDir is subdirectory of excluded path")
+	}
+
+	if !errors.Is(err, ErrWorkDirExcluded) {
+		t.Errorf("expected ErrWorkDirExcluded, got: %v", err)
+	}
+
+	// Error should include both paths
+	AssertContains(t, err.Error(), workDir)
+	AssertContains(t, err.Error(), excludedPath)
+}
+
+func Test_ValidateWorkDirNotExcluded_No_Error_When_WorkDir_Is_Under_ReadOnly_Path(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	roPath := filepath.Join(dir, "readonly")
+	workDir := filepath.Join(roPath, "subdir")
+	mustCreateDir(t, workDir)
+
+	paths := []ResolvedPath{
+		{Resolved: roPath, Access: PathAccessRo, Source: PathSourceCLI},
+	}
+
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err != nil {
+		t.Errorf("unexpected error for workDir under ro path: %v", err)
+	}
+}
+
+func Test_ValidateWorkDirNotExcluded_No_Error_When_WorkDir_Is_Under_ReadWrite_Path(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	rwPath := filepath.Join(dir, "readwrite")
+	workDir := filepath.Join(rwPath, "subdir")
+	mustCreateDir(t, workDir)
+
+	paths := []ResolvedPath{
+		{Resolved: rwPath, Access: PathAccessRw, Source: PathSourceCLI},
+	}
+
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err != nil {
+		t.Errorf("unexpected error for workDir under rw path: %v", err)
+	}
+}
+
+func Test_ValidateWorkDirNotExcluded_Resolves_Symlinks_In_WorkDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create the real directory structure
+	realDir := filepath.Join(dir, "real", "project")
+	mustCreateDir(t, realDir)
+
+	// Create a symlink to the real directory
+	linkDir := filepath.Join(dir, "link")
+
+	err := os.Symlink(filepath.Join(dir, "real"), linkDir)
+	if err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	// Exclude the real path
+	paths := []ResolvedPath{
+		{Resolved: filepath.Join(dir, "real"), Access: PathAccessExclude, Source: PathSourceCLI},
+	}
+
+	// workDir via symlink should still be detected as excluded
+	workDirViaSymlink := filepath.Join(linkDir, "project")
+
+	err = ValidateWorkDirNotExcluded(paths, workDirViaSymlink)
+	if err == nil {
+		t.Fatal("expected error when workDir (via symlink) resolves to excluded path")
+	}
+
+	if !errors.Is(err, ErrWorkDirExcluded) {
+		t.Errorf("expected ErrWorkDirExcluded, got: %v", err)
+	}
+}
+
+func Test_ValidateWorkDirNotExcluded_No_Error_When_No_Excluded_Paths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	mustCreateDir(t, workDir)
+
+	paths := []ResolvedPath{
+		{Resolved: filepath.Join(dir, "other"), Access: PathAccessRo, Source: PathSourceCLI},
+		{Resolved: filepath.Join(dir, "another"), Access: PathAccessRw, Source: PathSourceProject},
+	}
+
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err != nil {
+		t.Errorf("unexpected error when no excluded paths: %v", err)
+	}
+}
+
+func Test_ValidateWorkDirNotExcluded_No_Error_When_Excluded_Path_Is_Sibling(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	excludedDir := filepath.Join(dir, "excluded")
+
+	mustCreateDir(t, workDir)
+	mustCreateDir(t, excludedDir)
+
+	paths := []ResolvedPath{
+		{Resolved: excludedDir, Access: PathAccessExclude, Source: PathSourceCLI},
+	}
+
+	// workDir is a sibling of excluded path, should be OK
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err != nil {
+		t.Errorf("unexpected error when excluded path is sibling: %v", err)
+	}
+}
+
+func Test_ValidateWorkDirNotExcluded_No_Error_When_Excluded_Path_Is_Child_Of_WorkDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	excludedDir := filepath.Join(workDir, "excluded")
+	mustCreateDir(t, excludedDir)
+
+	paths := []ResolvedPath{
+		{Resolved: excludedDir, Access: PathAccessExclude, Source: PathSourceCLI},
+	}
+
+	// workDir is parent of excluded path, should be OK
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err != nil {
+		t.Errorf("unexpected error when excluded path is child of workDir: %v", err)
+	}
+}
+
+func Test_ValidateWorkDirNotExcluded_No_Error_When_Empty_Paths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	mustCreateDir(t, workDir)
+
+	err := ValidateWorkDirNotExcluded(nil, workDir)
+	if err != nil {
+		t.Errorf("unexpected error for empty paths: %v", err)
+	}
+}
+
+func Test_ValidateWorkDirNotExcluded_Handles_Similar_Path_Names(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	excludedDir := filepath.Join(dir, "project")
+	workDir := filepath.Join(dir, "project-new") // Similar but different
+
+	mustCreateDir(t, excludedDir)
+	mustCreateDir(t, workDir)
+
+	paths := []ResolvedPath{
+		{Resolved: excludedDir, Access: PathAccessExclude, Source: PathSourceCLI},
+	}
+
+	// workDir is "project-new", not under "project" - should be OK
+	err := ValidateWorkDirNotExcluded(paths, workDir)
+	if err != nil {
+		t.Errorf("unexpected error for similar but different path name: %v", err)
+	}
+}
+
+// ============================================================================
+// isPathUnder tests
+// ============================================================================
+
+func Test_isPathUnder_Returns_True_When_Equal(t *testing.T) {
+	t.Parallel()
+
+	if !isPathUnder("/home/user", "/home/user") {
+		t.Error("isPathUnder should return true when paths are equal")
+	}
+}
+
+func Test_isPathUnder_Returns_True_When_Child(t *testing.T) {
+	t.Parallel()
+
+	if !isPathUnder("/home/user/project", "/home/user") {
+		t.Error("isPathUnder should return true when child is under parent")
+	}
+}
+
+func Test_isPathUnder_Returns_True_When_Deep_Child(t *testing.T) {
+	t.Parallel()
+
+	if !isPathUnder("/home/user/project/src/main.go", "/home/user") {
+		t.Error("isPathUnder should return true for deep nested child")
+	}
+}
+
+func Test_isPathUnder_Returns_False_When_Sibling(t *testing.T) {
+	t.Parallel()
+
+	if isPathUnder("/home/alice", "/home/bob") {
+		t.Error("isPathUnder should return false for siblings")
+	}
+}
+
+func Test_isPathUnder_Returns_False_When_Similar_Prefix(t *testing.T) {
+	t.Parallel()
+
+	// "/home/user-new" is NOT under "/home/user"
+	if isPathUnder("/home/user-new", "/home/user") {
+		t.Error("isPathUnder should return false for similar prefix without separator")
+	}
+}
+
+func Test_isPathUnder_Returns_False_When_Parent(t *testing.T) {
+	t.Parallel()
+
+	if isPathUnder("/home", "/home/user") {
+		t.Error("isPathUnder should return false when 'child' is actually parent")
+	}
+}

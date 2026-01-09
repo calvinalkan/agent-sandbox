@@ -52,6 +52,9 @@ type PathLayerInput struct {
 // ErrEmptyPathPattern is returned when an empty path pattern is provided.
 var ErrEmptyPathPattern = errors.New("empty path pattern")
 
+// ErrWorkDirExcluded is returned when the working directory is inside an excluded path.
+var ErrWorkDirExcluded = errors.New("working directory is inside excluded path")
+
 // ResolvePath converts a path pattern to an absolute path.
 //
 // Resolution rules:
@@ -239,4 +242,43 @@ func resolveOnePath(pattern string, access PathAccess, source PathSource, homeDi
 	}
 
 	return result, nil
+}
+
+// ValidateWorkDirNotExcluded checks that the working directory is not inside an excluded path.
+// Per SPEC error conditions: "$PWD inside excluded path → Error, exit"
+//
+// Both workDir and excluded paths are symlink-resolved before comparison.
+// Returns an error if workDir equals or is under any excluded path.
+func ValidateWorkDirNotExcluded(paths []ResolvedPath, workDir string) error {
+	// Resolve symlinks in working directory
+	resolvedWorkDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		return fmt.Errorf("resolving working directory symlinks: %w", err)
+	}
+
+	for _, entry := range paths {
+		if entry.Access != PathAccessExclude {
+			continue
+		}
+
+		// Check if workDir is the excluded path or under it
+		// The Resolved field is already symlink-resolved by ResolvePaths
+		if isPathUnder(resolvedWorkDir, entry.Resolved) {
+			return fmt.Errorf("%w: %s is inside excluded path %s (change directory or remove exclusion)",
+				ErrWorkDirExcluded, resolvedWorkDir, entry.Resolved)
+		}
+	}
+
+	return nil
+}
+
+// isPathUnder returns true if child equals or is a subdirectory of parent.
+// Both paths must be absolute and cleaned (no trailing slashes, no . or ..).
+func isPathUnder(child, parent string) bool {
+	if child == parent {
+		return true
+	}
+
+	// Check if child is under parent by verifying it starts with parent + separator
+	return strings.HasPrefix(child, parent+string(filepath.Separator))
 }
