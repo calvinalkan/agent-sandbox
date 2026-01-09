@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -269,5 +271,105 @@ func AssertNotContains(t *testing.T, content, substr string) {
 	cleaned := stripANSI(content)
 	if strings.Contains(cleaned, substr) {
 		t.Errorf("content should NOT contain %q\ncontent:\n%s", substr, content)
+	}
+}
+
+// ============================================================================
+// Git test helpers
+// ============================================================================
+
+// GitRepo provides helpers for creating and managing git repositories in tests.
+type GitRepo struct {
+	t   *testing.T
+	Dir string
+}
+
+// NewGitRepo creates a new git repository in a temp directory.
+// Skips the test if git is not installed.
+func NewGitRepo(t *testing.T) *GitRepo {
+	t.Helper()
+
+	dir := t.TempDir()
+	repo := &GitRepo{t: t, Dir: dir}
+	repo.run("init")
+	repo.run("config", "user.email", "test@test.com")
+	repo.run("config", "user.name", "Test User")
+	repo.run("config", "commit.gpgsign", "false") // Disable GPG signing for tests
+
+	return repo
+}
+
+// NewGitRepoAt creates a git repository at the specified directory.
+// Skips the test if git is not installed.
+func NewGitRepoAt(t *testing.T, dir string) *GitRepo {
+	t.Helper()
+
+	err := os.MkdirAll(dir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create directory %s: %v", dir, err)
+	}
+
+	repo := &GitRepo{t: t, Dir: dir}
+	repo.run("init")
+	repo.run("config", "user.email", "test@test.com")
+	repo.run("config", "user.name", "Test User")
+	repo.run("config", "commit.gpgsign", "false") // Disable GPG signing for tests
+
+	return repo
+}
+
+// WriteFile writes a file to the repository.
+func (r *GitRepo) WriteFile(relPath, content string) {
+	r.t.Helper()
+
+	path := filepath.Join(r.Dir, relPath)
+	dir := filepath.Dir(path)
+
+	err := os.MkdirAll(dir, 0o750)
+	if err != nil {
+		r.t.Fatalf("failed to create dir %s: %v", dir, err)
+	}
+
+	err = os.WriteFile(path, []byte(content), 0o644)
+	if err != nil {
+		r.t.Fatalf("failed to write file %s: %v", relPath, err)
+	}
+}
+
+// Commit stages all files and creates a commit with the given message.
+func (r *GitRepo) Commit(message string) {
+	r.t.Helper()
+
+	r.run("add", "-A")
+	r.run("commit", "-m", message)
+}
+
+// AddWorktree creates a new worktree at the specified path with a new branch.
+// Returns the worktree directory path.
+func (r *GitRepo) AddWorktree(worktreeDir, branchName string) string {
+	r.t.Helper()
+
+	r.run("worktree", "add", worktreeDir, "-b", branchName)
+
+	return worktreeDir
+}
+
+// run executes a git command in the repository directory.
+// Skips the test if git is not available, fails on other errors.
+func (r *GitRepo) run(args ...string) {
+	r.t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.Dir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if git is not installed
+		var execErr *exec.Error
+		if errors.As(err, &execErr) && errors.Is(execErr.Err, exec.ErrNotFound) {
+			r.t.Skipf("git not installed, skipping test")
+		}
+
+		r.t.Fatalf("git %v failed: %v\noutput: %s", args, err, output)
 	}
 }

@@ -1,5 +1,16 @@
 package main
 
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// ErrInvalidGitFile indicates that a .git file has invalid format.
+var ErrInvalidGitFile = errors.New("invalid .git file format")
+
 // PresetPaths holds resolved paths for a preset.
 type PresetPaths struct {
 	Ro      []string
@@ -147,10 +158,122 @@ func resolveCachesPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
 	}
 }
 
+// GitPaths holds resolved paths for a git repository.
+// For normal repos, only Hooks and Config are set.
+// For worktrees, MainHooks and MainConfig are also set (pointing to the main repo).
+type GitPaths struct {
+	Hooks      string // worktree or normal .git/hooks
+	Config     string // worktree or normal .git/config
+	MainHooks  string // main repo hooks (only for worktrees)
+	MainConfig string // main repo config (only for worktrees)
+}
+
 // resolveGitPreset returns paths for the @git preset.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveGitPreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+// It protects .git/hooks and .git/config from modification.
+// For worktrees, it also protects the main repo's hooks and config.
+//
+// Note: @git ignores the disabled parameter (it's a simple preset).
+func resolveGitPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	gitPaths, err := resolveGitPaths(ctx.WorkDir)
+	if err != nil {
+		// Error reading git files - return empty paths
+		return PresetPaths{}
+	}
+
+	paths := PresetPaths{}
+
+	// Add worktree or normal repo paths (empty strings are skipped)
+	if gitPaths.Hooks != "" {
+		paths.Ro = append(paths.Ro, gitPaths.Hooks)
+	}
+
+	if gitPaths.Config != "" {
+		paths.Ro = append(paths.Ro, gitPaths.Config)
+	}
+
+	// Add main repo paths (only set for worktrees)
+	if gitPaths.MainHooks != "" {
+		paths.Ro = append(paths.Ro, gitPaths.MainHooks)
+	}
+
+	if gitPaths.MainConfig != "" {
+		paths.Ro = append(paths.Ro, gitPaths.MainConfig)
+	}
+
+	return paths
+}
+
+// resolveGitPaths detects git repository type and returns paths to protect.
+// Returns an empty GitPaths (all fields empty) if workDir is not a git repository.
+// Returns error if .git file format is invalid.
+func resolveGitPaths(workDir string) (GitPaths, error) {
+	gitPath := filepath.Join(workDir, ".git")
+
+	info, err := os.Lstat(gitPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// No .git, not a git repo - return empty paths (not an error)
+		return GitPaths{}, nil
+	}
+
+	if err != nil {
+		return GitPaths{}, fmt.Errorf("checking .git path: %w", err)
+	}
+
+	var result GitPaths
+
+	if info.IsDir() {
+		// Normal repo - .git is a directory
+		result.Hooks = filepath.Join(gitPath, "hooks")
+		result.Config = filepath.Join(gitPath, "config")
+
+		return result, nil
+	}
+
+	// Worktree: .git is a file containing "gitdir: /path/to/.git/worktrees/name"
+	content, err := os.ReadFile(gitPath)
+	if err != nil {
+		return GitPaths{}, fmt.Errorf("reading .git file: %w", err)
+	}
+
+	// Parse "gitdir: /path/to/.git/worktrees/name"
+	gitdirLine := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(gitdirLine, "gitdir: ") {
+		return GitPaths{}, fmt.Errorf("%w: expected 'gitdir: <path>', got %q", ErrInvalidGitFile, gitdirLine)
+	}
+
+	worktreeGitDir := strings.TrimPrefix(gitdirLine, "gitdir: ")
+
+	// Handle relative paths in gitdir (resolve relative to workDir)
+	if !filepath.IsAbs(worktreeGitDir) {
+		worktreeGitDir = filepath.Join(workDir, worktreeGitDir)
+	}
+
+	worktreeGitDir, err = filepath.Abs(worktreeGitDir)
+	if err != nil {
+		return GitPaths{}, fmt.Errorf("resolving worktree git dir: %w", err)
+	}
+
+	// Protect worktree-specific hooks/config
+	result.Hooks = filepath.Join(worktreeGitDir, "hooks")
+	result.Config = filepath.Join(worktreeGitDir, "config")
+
+	// Find commondir to get main repo's .git
+	commondirPath := filepath.Join(worktreeGitDir, "commondir")
+
+	commondirContent, err := os.ReadFile(commondirPath)
+	if err == nil {
+		commondir := strings.TrimSpace(string(commondirContent))
+		mainGitDir := filepath.Join(worktreeGitDir, commondir)
+
+		mainGitDir, err = filepath.Abs(mainGitDir)
+		if err == nil {
+			// Also protect main repo's hooks/config
+			result.MainHooks = filepath.Join(mainGitDir, "hooks")
+			result.MainConfig = filepath.Join(mainGitDir, "config")
+		}
+	}
+
+	return result, nil
 }
 
 // resolveLintTSPreset returns paths for the @lint/ts preset.

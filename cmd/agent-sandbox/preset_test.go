@@ -1,10 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
+
+// Note: exec import removed - git commands use GitRepo helper from testing_test.go
 
 func Test_PresetRegistry_Contains_All_Expected_Presets(t *testing.T) {
 	t.Parallel()
@@ -629,5 +633,611 @@ func Test_CachesPreset_Works_With_Different_Home_Dir(t *testing.T) {
 
 	if !sliceContains(paths.Rw, "/users/alice/go") {
 		t.Errorf("@caches should use correct home dir for go, got: %v", paths.Rw)
+	}
+}
+
+// ============================================================================
+// @git preset tests
+// ============================================================================
+
+func Test_GitPreset_Returns_Hooks_And_Config_For_Normal_Repo(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	expectedHooks := filepath.Join(gitDir, "hooks")
+	expectedConfig := filepath.Join(gitDir, "config")
+
+	if !sliceContains(paths.Ro, expectedHooks) {
+		t.Errorf("@git should include .git/hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedConfig) {
+		t.Errorf("@git should include .git/config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitPreset_Returns_Empty_For_Non_Git_Directory(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory without .git
+	tmpDir := t.TempDir()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	if len(paths.Ro) != 0 {
+		t.Errorf("@git should return empty ro paths for non-git directory, got: %v", paths.Ro)
+	}
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@git should return empty rw paths for non-git directory, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@git should return empty exclude paths for non-git directory, got: %v", paths.Exclude)
+	}
+}
+
+func Test_GitPreset_Parses_Worktree_Gitdir_Line(t *testing.T) {
+	t.Parallel()
+
+	// Create main repo structure
+	tmpDir := t.TempDir()
+	mainRepoDir := filepath.Join(tmpDir, "main-repo")
+	mainGitDir := filepath.Join(mainRepoDir, ".git")
+
+	// Create main repo .git directory structure
+	err := os.MkdirAll(filepath.Join(mainGitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(mainGitDir, "worktrees", "feature-branch"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(mainGitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktree gitdir structure
+	worktreeGitDir := filepath.Join(mainGitDir, "worktrees", "feature-branch")
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "config"), []byte("[worktree]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// commondir points back to main .git directory
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../.."), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktree directory with .git file
+	worktreeDir := filepath.Join(tmpDir, "worktree")
+
+	err = os.MkdirAll(worktreeDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// .git file in worktree points to worktree gitdir
+	gitFile := filepath.Join(worktreeDir, ".git")
+	gitdirContent := "gitdir: " + worktreeGitDir + "\n"
+
+	err = os.WriteFile(gitFile, []byte(gitdirContent), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	// Should have 4 ro paths: worktree hooks/config + main hooks/config
+	if len(paths.Ro) != 4 {
+		t.Errorf("@git for worktree should have 4 ro paths, got %d: %v", len(paths.Ro), paths.Ro)
+	}
+}
+
+func Test_GitPreset_Protects_Worktree_Hooks_And_Config(t *testing.T) {
+	t.Parallel()
+
+	// Create main repo structure
+	tmpDir := t.TempDir()
+	mainRepoDir := filepath.Join(tmpDir, "main-repo")
+	mainGitDir := filepath.Join(mainRepoDir, ".git")
+
+	// Create main repo .git directory structure
+	err := os.MkdirAll(filepath.Join(mainGitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeGitDir := filepath.Join(mainGitDir, "worktrees", "feature")
+
+	err = os.MkdirAll(filepath.Join(worktreeGitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(mainGitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "config"), []byte("[worktree]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../.."), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktree directory with .git file
+	worktreeDir := filepath.Join(tmpDir, "worktree")
+
+	err = os.MkdirAll(worktreeDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitFile := filepath.Join(worktreeDir, ".git")
+
+	err = os.WriteFile(gitFile, []byte("gitdir: "+worktreeGitDir+"\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	expectedWorktreeHooks := filepath.Join(worktreeGitDir, "hooks")
+	expectedWorktreeConfig := filepath.Join(worktreeGitDir, "config")
+
+	if !sliceContains(paths.Ro, expectedWorktreeHooks) {
+		t.Errorf("@git should include worktree hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedWorktreeConfig) {
+		t.Errorf("@git should include worktree config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitPreset_Protects_Main_Repo_Hooks_And_Config_From_Worktree(t *testing.T) {
+	t.Parallel()
+
+	// Create main repo structure
+	tmpDir := t.TempDir()
+	mainRepoDir := filepath.Join(tmpDir, "main-repo")
+	mainGitDir := filepath.Join(mainRepoDir, ".git")
+
+	// Create main repo .git directory structure
+	err := os.MkdirAll(filepath.Join(mainGitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeGitDir := filepath.Join(mainGitDir, "worktrees", "feature")
+
+	err = os.MkdirAll(worktreeGitDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(mainGitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "config"), []byte("[worktree]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../.."), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktree directory with .git file
+	worktreeDir := filepath.Join(tmpDir, "worktree")
+
+	err = os.MkdirAll(worktreeDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitFile := filepath.Join(worktreeDir, ".git")
+
+	err = os.WriteFile(gitFile, []byte("gitdir: "+worktreeGitDir+"\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	expectedMainHooks := filepath.Join(mainGitDir, "hooks")
+	expectedMainConfig := filepath.Join(mainGitDir, "config")
+
+	if !sliceContains(paths.Ro, expectedMainHooks) {
+		t.Errorf("@git should include main repo hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedMainConfig) {
+		t.Errorf("@git should include main repo config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitPreset_Returns_Error_For_Invalid_Git_File_Format(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with an invalid .git file
+	tmpDir := t.TempDir()
+	gitFile := filepath.Join(tmpDir, ".git")
+
+	// Write invalid content (not starting with "gitdir: ")
+	err := os.WriteFile(gitFile, []byte("invalid content"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := resolveGitPaths(tmpDir)
+	if err == nil {
+		t.Errorf("resolveGitPaths should return error for invalid .git file format")
+	}
+
+	// Result should be empty GitPaths on error
+	if result.Hooks != "" || result.Config != "" || result.MainHooks != "" || result.MainConfig != "" {
+		t.Errorf("resolveGitPaths should return empty GitPaths for invalid .git file, got: %+v", result)
+	}
+
+	if !strings.Contains(err.Error(), "invalid .git file format") {
+		t.Errorf("error should mention invalid format, got: %v", err)
+	}
+}
+
+func Test_GitPreset_Ignores_Disabled_Map(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	// @git is a simple preset, so disabled should have no effect
+	disabled := map[string]bool{
+		"@git": true,
+	}
+
+	paths := resolveGitPreset(ctx, disabled)
+
+	// Should still return paths
+	if len(paths.Ro) == 0 {
+		t.Error("@git should return ro paths even with disabled map")
+	}
+}
+
+func Test_GitPreset_Returns_No_RW_Or_Exclude_Paths(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@git should not return any rw paths, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@git should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_GitPreset_Uses_Absolute_Paths(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+}
+
+func Test_GitPreset_Handles_Relative_Gitdir_Path(t *testing.T) {
+	t.Parallel()
+
+	// Create main repo structure
+	tmpDir := t.TempDir()
+	mainRepoDir := filepath.Join(tmpDir, "main-repo")
+	mainGitDir := filepath.Join(mainRepoDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(mainGitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeGitDir := filepath.Join(mainGitDir, "worktrees", "feature")
+
+	err = os.MkdirAll(worktreeGitDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(mainGitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "config"), []byte("[worktree]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../.."), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktree directory with .git file using RELATIVE path
+	worktreeDir := filepath.Join(tmpDir, "worktree")
+
+	err = os.MkdirAll(worktreeDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use relative path in gitdir line
+	relativePath := "../main-repo/.git/worktrees/feature"
+	gitFile := filepath.Join(worktreeDir, ".git")
+
+	err = os.WriteFile(gitFile, []byte("gitdir: "+relativePath+"\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	// Should still resolve correctly
+	if len(paths.Ro) != 4 {
+		t.Errorf("@git with relative gitdir should have 4 ro paths, got %d: %v", len(paths.Ro), paths.Ro)
+	}
+
+	// Verify paths are absolute
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute even with relative gitdir: %q", p)
+		}
+	}
+}
+
+func Test_GitPreset_Handles_Missing_Commondir(t *testing.T) {
+	t.Parallel()
+
+	// Create main repo structure
+	tmpDir := t.TempDir()
+	mainRepoDir := filepath.Join(tmpDir, "main-repo")
+	mainGitDir := filepath.Join(mainRepoDir, ".git")
+
+	worktreeGitDir := filepath.Join(mainGitDir, "worktrees", "feature")
+
+	err := os.MkdirAll(worktreeGitDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "config"), []byte("[worktree]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Note: No commondir file
+
+	// Create worktree directory with .git file
+	worktreeDir := filepath.Join(tmpDir, "worktree")
+
+	err = os.MkdirAll(worktreeDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitFile := filepath.Join(worktreeDir, ".git")
+
+	err = os.WriteFile(gitFile, []byte("gitdir: "+worktreeGitDir+"\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	// Should only have 2 ro paths (worktree hooks/config, no main repo)
+	if len(paths.Ro) != 2 {
+		t.Errorf("@git without commondir should have 2 ro paths, got %d: %v", len(paths.Ro), paths.Ro)
+	}
+
+	// Verify worktree paths are present
+	expectedWorktreeHooks := filepath.Join(worktreeGitDir, "hooks")
+	expectedWorktreeConfig := filepath.Join(worktreeGitDir, "config")
+
+	if !sliceContains(paths.Ro, expectedWorktreeHooks) {
+		t.Errorf("@git should include worktree hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedWorktreeConfig) {
+		t.Errorf("@git should include worktree config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+// ============================================================================
+// @git preset integration tests with real git
+// ============================================================================
+
+func Test_GitPreset_Integration_Real_Git_Init(t *testing.T) {
+	t.Parallel()
+
+	// Create a real git repository
+	repo := NewGitRepo(t)
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: repo.Dir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	// Should have 2 ro paths for a normal git repo
+	if len(paths.Ro) != 2 {
+		t.Errorf("@git for real git repo should have 2 ro paths, got %d: %v", len(paths.Ro), paths.Ro)
+	}
+
+	expectedHooks := filepath.Join(repo.Dir, ".git", "hooks")
+	expectedConfig := filepath.Join(repo.Dir, ".git", "config")
+
+	if !sliceContains(paths.Ro, expectedHooks) {
+		t.Errorf("@git should include .git/hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedConfig) {
+		t.Errorf("@git should include .git/config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitPreset_Integration_Real_Git_Worktree(t *testing.T) {
+	t.Parallel()
+
+	// Create a real git repository with an initial commit
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("Initial commit")
+
+	// Create a worktree
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	repo.AddWorktree(worktreeDir, "feature-branch")
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	paths := resolveGitPreset(ctx, nil)
+
+	// Should have 4 ro paths for a worktree (worktree + main repo)
+	if len(paths.Ro) != 4 {
+		t.Errorf("@git for real worktree should have 4 ro paths, got %d: %v", len(paths.Ro), paths.Ro)
+	}
+
+	// Verify main repo paths are included
+	mainGitDir := filepath.Join(repo.Dir, ".git")
+	expectedMainHooks := filepath.Join(mainGitDir, "hooks")
+	expectedMainConfig := filepath.Join(mainGitDir, "config")
+
+	if !sliceContains(paths.Ro, expectedMainHooks) {
+		t.Errorf("@git should include main repo hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedMainConfig) {
+		t.Errorf("@git should include main repo config in ro paths, got: %v", paths.Ro)
 	}
 }
