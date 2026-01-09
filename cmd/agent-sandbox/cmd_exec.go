@@ -46,7 +46,8 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 		Long:    "Run a command inside the bubblewrap sandbox with configured filesystem access.",
 		Aliases: []string{},
 		Exec: func(_ context.Context, _ io.Reader, _, stderr io.Writer, args []string) error {
-			if err := checkPlatformPrerequisites(); err != nil {
+			err := checkPlatformPrerequisites()
+			if err != nil {
 				return err
 			}
 

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tailscale/hujson"
 )
@@ -13,11 +15,105 @@ import (
 // ErrDuplicateConfigFiles is returned when both .json and .jsonc config files exist.
 var ErrDuplicateConfigFiles = errors.New("duplicate config files")
 
+// ErrInvalidCommandRule is returned when a command rule has an invalid type.
+var ErrInvalidCommandRule = errors.New("command rule must be boolean or string")
+
+// CommandRuleKind represents the type of command wrapper rule.
+type CommandRuleKind int
+
+const (
+	// CommandRuleUnset indicates no rule has been set.
+	CommandRuleUnset CommandRuleKind = iota
+	// CommandRuleRaw allows the command to run without any wrapper (true in config).
+	CommandRuleRaw
+	// CommandRuleBlock prevents the command from running (false in config).
+	CommandRuleBlock
+	// CommandRulePreset uses a built-in smart wrapper ("@git" in config).
+	CommandRulePreset
+	// CommandRuleScript uses a custom wrapper script ("/path/to/script" in config).
+	CommandRuleScript
+)
+
+// CommandRule represents a command wrapper configuration.
+// It can be a boolean (true = raw, false = block) or a string
+// (starting with @ = preset, otherwise = script path).
+type CommandRule struct {
+	Kind  CommandRuleKind
+	Value string // used for Preset (e.g., "@git") and Script (e.g., "/path/to/wrapper")
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for CommandRule.
+// Accepts boolean or string values as per spec.
+func (r *CommandRule) UnmarshalJSON(data []byte) error {
+	// Check for null explicitly (json.Unmarshal would accept null for bool/string)
+	if string(data) == "null" {
+		return fmt.Errorf("%w: got %s", ErrInvalidCommandRule, string(data))
+	}
+
+	// Try string first (string must be quoted, bool cannot be)
+	var strVal string
+
+	err := json.Unmarshal(data, &strVal)
+	if err == nil {
+		if strings.HasPrefix(strVal, "@") {
+			r.Kind = CommandRulePreset
+			r.Value = strVal
+		} else {
+			r.Kind = CommandRuleScript
+			r.Value = strVal
+		}
+
+		return nil
+	}
+
+	// Try boolean
+	var boolVal bool
+
+	err = json.Unmarshal(data, &boolVal)
+	if err == nil {
+		if boolVal {
+			r.Kind = CommandRuleRaw
+		} else {
+			r.Kind = CommandRuleBlock
+		}
+
+		r.Value = ""
+
+		return nil
+	}
+
+	return fmt.Errorf("%w: got %s", ErrInvalidCommandRule, string(data))
+}
+
+// MarshalJSON implements custom JSON marshaling for CommandRule.
+func (r CommandRule) MarshalJSON() ([]byte, error) {
+	var val any
+
+	switch r.Kind {
+	case CommandRuleUnset:
+		val = nil
+	case CommandRuleRaw:
+		val = true
+	case CommandRuleBlock:
+		val = false
+	case CommandRulePreset, CommandRuleScript:
+		val = r.Value
+	}
+
+	data, err := json.Marshal(val)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling command rule: %w", err)
+	}
+
+	return data, nil
+}
+
 // Config holds the application configuration.
 type Config struct {
-	Network    *bool            `json:"network,omitempty"`
-	Docker     *bool            `json:"docker,omitempty"`
-	Filesystem FilesystemConfig `json:"filesystem"`
+	Network    *bool                  `json:"network,omitempty"`
+	Docker     *bool                  `json:"docker,omitempty"`
+	Filesystem FilesystemConfig       `json:"filesystem"`
+	Commands   map[string]CommandRule `json:"commands,omitempty"`
 
 	// Resolved (not serialized)
 	EffectiveCwd string `json:"-"`
@@ -36,6 +132,9 @@ func DefaultConfig() Config {
 	return Config{
 		Network: boolPtr(true),
 		Docker:  boolPtr(false),
+		Commands: map[string]CommandRule{
+			"git": {Kind: CommandRulePreset, Value: "@git"},
+		},
 	}
 }
 
@@ -264,6 +363,15 @@ func mergeConfigs(base, override *Config) Config {
 
 	if len(override.Filesystem.Exclude) > 0 {
 		result.Filesystem.Exclude = override.Filesystem.Exclude
+	}
+
+	// Merge commands map (later values override earlier for same key)
+	if len(override.Commands) > 0 {
+		if result.Commands == nil {
+			result.Commands = make(map[string]CommandRule)
+		}
+
+		maps.Copy(result.Commands, override.Commands)
 	}
 
 	return result
