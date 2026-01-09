@@ -3,9 +3,51 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
+
+// PathSource identifies where a path rule originated.
+type PathSource string
+
+const (
+	// PathSourcePreset indicates the path came from a built-in preset.
+	PathSourcePreset PathSource = "preset"
+	// PathSourceGlobal indicates the path came from global config.
+	PathSourceGlobal PathSource = "global"
+	// PathSourceProject indicates the path came from project config.
+	PathSourceProject PathSource = "project"
+	// PathSourceCLI indicates the path came from CLI flags.
+	PathSourceCLI PathSource = "cli"
+)
+
+// PathAccess represents the access level for a resolved path.
+type PathAccess string
+
+const (
+	// PathAccessRo indicates read-only access.
+	PathAccessRo PathAccess = "ro"
+	// PathAccessRw indicates read-write access.
+	PathAccessRw PathAccess = "rw"
+	// PathAccessExclude indicates the path is hidden/excluded.
+	PathAccessExclude PathAccess = "exclude"
+)
+
+// ResolvedPath represents a path ready for bwrap mounting.
+type ResolvedPath struct {
+	Original string     // Original pattern from config (e.g., "~/code/*")
+	Resolved string     // Absolute, symlink-resolved path
+	Access   PathAccess // "ro", "rw", or "exclude"
+	Source   PathSource // "preset", "global", "project", "cli"
+}
+
+// PathLayerInput holds paths from a single config layer.
+type PathLayerInput struct {
+	Ro      []string
+	Rw      []string
+	Exclude []string
+}
 
 // ErrEmptyPathPattern is returned when an empty path pattern is provided.
 var ErrEmptyPathPattern = errors.New("empty path pattern")
@@ -48,12 +90,13 @@ func ResolvePath(pattern, homeDir, workDir string) (string, error) {
 
 // ExpandGlob expands a path pattern with wildcards to matching files.
 // If the pattern contains glob metacharacters (*, ?, []), it uses filepath.Glob
-// to find matching paths. Symlinks in results are resolved to their real paths.
+// to find matching paths. NOTE: This function does NOT resolve symlinks -
+// that is done by the full resolution pipeline (resolveOnePath).
 //
 // Returns:
 //   - Non-glob patterns: returned as-is (single-element slice)
-//   - Glob patterns matching files: list of resolved paths (sorted)
-//   - Glob patterns matching nothing: empty slice (no error, per SPEC)
+//   - Glob patterns matching files: list of matching paths (sorted)
+//   - Glob patterns matching nothing: nil slice (no error, per SPEC)
 //   - Invalid glob patterns (e.g., malformed brackets): error
 func ExpandGlob(pattern string) ([]string, error) {
 	// Check if pattern contains glob metacharacters
@@ -75,19 +118,125 @@ func ExpandGlob(pattern string) ([]string, error) {
 		return nil, nil
 	}
 
-	// Resolve symlinks for each match
-	// Per SPEC hardcoded behavior: "Symlink resolution: Paths are resolved before mounting"
-	resolved := make([]string, 0, len(matches))
-	for _, match := range matches {
-		realPath, err := filepath.EvalSymlinks(match)
-		if err != nil {
-			// If symlink resolution fails (e.g., dangling symlink),
-			// skip this match silently - it's similar to "path doesn't exist"
-			continue
-		}
+	return matches, nil
+}
 
-		resolved = append(resolved, realPath)
+// ResolvePathsInput holds all path sources for the full resolution pipeline.
+type ResolvePathsInput struct {
+	Preset  PathLayerInput
+	Global  PathLayerInput
+	Project PathLayerInput
+	CLI     PathLayerInput
+	HomeDir string
+	WorkDir string
+}
+
+// ResolvePaths processes all paths from config/presets into mount-ready paths.
+// It applies the full pipeline: expand ~ and relative → glob expansion →
+// existence check → symlink resolution.
+//
+// Per SPEC error conditions:
+//   - Path doesn't exist (non-glob) → Skip silently
+//   - Glob matches nothing → Skip silently
+//   - Permission errors → Returned as errors
+//   - Invalid glob patterns → Returned as errors
+func ResolvePaths(input *ResolvePathsInput) ([]ResolvedPath, error) {
+	var result []ResolvedPath
+
+	// Process each layer in order (later layers override earlier for same paths)
+	layers := []struct {
+		paths  PathLayerInput
+		source PathSource
+	}{
+		{input.Preset, PathSourcePreset},
+		{input.Global, PathSourceGlobal},
+		{input.Project, PathSourceProject},
+		{input.CLI, PathSourceCLI},
 	}
 
-	return resolved, nil
+	for _, layer := range layers {
+		// Process each access level within the layer
+		accessLevels := []struct {
+			paths  []string
+			access PathAccess
+		}{
+			{layer.paths.Ro, PathAccessRo},
+			{layer.paths.Rw, PathAccessRw},
+			{layer.paths.Exclude, PathAccessExclude},
+		}
+
+		for _, al := range accessLevels {
+			for _, pattern := range al.paths {
+				resolved, err := resolveOnePath(pattern, al.access, layer.source, input.HomeDir, input.WorkDir)
+				if err != nil {
+					return nil, err
+				}
+
+				result = append(result, resolved...)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// resolveOnePath applies the full path resolution pipeline to a single pattern:
+// 1. Expand ~ and relative paths to absolute
+// 2. Expand glob patterns to matching files
+// 3. Check existence (skip non-existent silently)
+// 4. Resolve symlinks to real paths.
+func resolveOnePath(pattern string, access PathAccess, source PathSource, homeDir, workDir string) ([]ResolvedPath, error) {
+	// Step 1: Expand ~ and resolve relative paths
+	expanded, err := ResolvePath(pattern, homeDir, workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving pattern %q: %w", pattern, err)
+	}
+
+	// Step 2: Expand globs
+	paths, err := ExpandGlob(expanded)
+	if err != nil {
+		return nil, err // Invalid glob patterns are real errors
+	}
+
+	// If glob matched nothing, return empty (per SPEC: skip silently)
+	if len(paths) == 0 {
+		return nil, nil
+	}
+
+	// Step 3 & 4: Check existence and resolve symlinks for each path
+	result := make([]ResolvedPath, 0, len(paths))
+
+	for _, path := range paths {
+		// Check if path exists using Lstat (doesn't follow symlinks for existence check)
+		_, err := os.Lstat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Per SPEC: "Path doesn't exist (non-glob) → Skip silently"
+				continue
+			}
+			// Permission denied and other errors are real errors
+			return nil, fmt.Errorf("checking path %q: %w", path, err)
+		}
+
+		// Resolve symlinks to get real path
+		// Per SPEC hardcoded behavior: "Symlink resolution: Paths are resolved before mounting"
+		realPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Dangling symlink - skip silently (target doesn't exist)
+				continue
+			}
+			// Other errors (permission denied on symlink target, etc.) are real errors
+			return nil, fmt.Errorf("resolving symlinks for %q: %w", path, err)
+		}
+
+		result = append(result, ResolvedPath{
+			Original: pattern,
+			Resolved: realPath,
+			Access:   access,
+			Source:   source,
+		})
+	}
+
+	return result, nil
 }

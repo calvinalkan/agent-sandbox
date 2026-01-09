@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -769,10 +770,10 @@ func Test_ExpandGlob_Returns_Empty_When_Directory_Empty(t *testing.T) {
 }
 
 // ============================================================================
-// ExpandGlob tests - Symlink resolution
+// ExpandGlob tests - Symlinks NOT resolved (done by full pipeline)
 // ============================================================================
 
-func Test_ExpandGlob_Resolves_Symlinks_In_Results(t *testing.T) {
+func Test_ExpandGlob_Returns_Symlinks_Unresolved(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -797,17 +798,17 @@ func Test_ExpandGlob_Resolves_Symlinks_In_Results(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Result should be the resolved real path, not the symlink
+	// ExpandGlob now returns symlinks as-is (resolution done by resolveOnePath)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 match, got %d: %v", len(result), result)
 	}
 
-	if result[0] != realFile {
-		t.Errorf("symlink should resolve to %q, got %q", realFile, result[0])
+	if result[0] != symlink {
+		t.Errorf("expected symlink path %q, got %q", symlink, result[0])
 	}
 }
 
-func Test_ExpandGlob_Skips_Dangling_Symlinks(t *testing.T) {
+func Test_ExpandGlob_Includes_Dangling_Symlinks(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -830,13 +831,10 @@ func Test_ExpandGlob_Skips_Dangling_Symlinks(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should only return the valid file, not the dangling symlink
-	if len(result) != 1 {
-		t.Errorf("expected 1 match (valid file only), got %d: %v", len(result), result)
-	}
-
-	if len(result) > 0 && result[0] != validFile {
-		t.Errorf("expected %q, got %q", validFile, result[0])
+	// ExpandGlob returns ALL matches including dangling symlinks
+	// (filtering happens in resolveOnePath)
+	if len(result) != 2 {
+		t.Errorf("expected 2 matches (including dangling), got %d: %v", len(result), result)
 	}
 }
 
@@ -974,4 +972,599 @@ func containsHelper(s, substr string) bool {
 	}
 
 	return false
+}
+
+// ============================================================================
+// ResolvePaths tests - Full pipeline
+// ============================================================================
+
+func Test_ResolvePaths_Resolves_Existing_Paths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create some test files
+	testFile := filepath.Join(workDir, "test.txt")
+	mustCreateFile(t, testFile, "content")
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"test.txt"},
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 resolved path, got %d: %v", len(result), result)
+	}
+
+	if result[0].Resolved != testFile {
+		t.Errorf("expected resolved path %q, got %q", testFile, result[0].Resolved)
+	}
+
+	if result[0].Access != PathAccessRo {
+		t.Errorf("expected access 'ro', got %q", result[0].Access)
+	}
+
+	if result[0].Source != PathSourceCLI {
+		t.Errorf("expected source 'cli', got %q", result[0].Source)
+	}
+}
+
+func Test_ResolvePaths_Skips_NonExistent_Paths_Silently(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create one existing file
+	existingFile := filepath.Join(workDir, "exists.txt")
+	mustCreateFile(t, existingFile, "content")
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{
+				"exists.txt",
+				"nonexistent.txt", // This file doesn't exist
+			},
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should only include existing file, silently skip non-existent
+	if len(result) != 1 {
+		t.Fatalf("expected 1 resolved path (non-existent skipped), got %d: %v", len(result), result)
+	}
+
+	if result[0].Resolved != existingFile {
+		t.Errorf("expected %q, got %q", existingFile, result[0].Resolved)
+	}
+}
+
+func Test_ResolvePaths_Skips_Glob_With_No_Matches(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create a file that won't match the pattern
+	mustCreateFile(t, filepath.Join(workDir, "file.json"), "content")
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"*.nonexistent"}, // Pattern matches nothing
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No paths should be returned, but no error either
+	if len(result) != 0 {
+		t.Errorf("expected 0 paths for non-matching glob, got %d: %v", len(result), result)
+	}
+}
+
+func Test_ResolvePaths_Returns_Error_For_Invalid_Glob(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"[invalid"}, // Malformed bracket expression
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	_, err := ResolvePaths(&input)
+	if err == nil {
+		t.Fatal("expected error for invalid glob pattern, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid glob pattern") {
+		t.Errorf("expected error to mention 'invalid glob pattern', got: %v", err)
+	}
+}
+
+func Test_ResolvePaths_Resolves_Symlinks_To_Real_Paths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create real file and symlink
+	realFile := filepath.Join(workDir, "real.txt")
+	mustCreateFile(t, realFile, "content")
+
+	symlink := filepath.Join(workDir, "link.txt")
+
+	err := os.Symlink(realFile, symlink)
+	if err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"link.txt"}, // Reference the symlink
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 resolved path, got %d: %v", len(result), result)
+	}
+
+	// Resolved path should be the real file, not the symlink
+	if result[0].Resolved != realFile {
+		t.Errorf("symlink should resolve to %q, got %q", realFile, result[0].Resolved)
+	}
+
+	// Original should still be the pattern
+	if result[0].Original != "link.txt" {
+		t.Errorf("original should be %q, got %q", "link.txt", result[0].Original)
+	}
+}
+
+func Test_ResolvePaths_Skips_Dangling_Symlinks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create dangling symlink
+	symlink := filepath.Join(workDir, "dangling.txt")
+
+	err := os.Symlink("/nonexistent/target", symlink)
+	if err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"dangling.txt"},
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Dangling symlinks should be skipped silently
+	if len(result) != 0 {
+		t.Errorf("expected 0 paths (dangling symlink skipped), got %d: %v", len(result), result)
+	}
+}
+
+func Test_ResolvePaths_Preserves_Source_Tracking(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create files for each layer
+	presetFile := filepath.Join(workDir, "preset.txt")
+	globalFile := filepath.Join(workDir, "global.txt")
+	projectFile := filepath.Join(workDir, "project.txt")
+	cliFile := filepath.Join(workDir, "cli.txt")
+
+	mustCreateFile(t, presetFile, "")
+	mustCreateFile(t, globalFile, "")
+	mustCreateFile(t, projectFile, "")
+	mustCreateFile(t, cliFile, "")
+
+	input := ResolvePathsInput{
+		Preset:  PathLayerInput{Ro: []string{"preset.txt"}},
+		Global:  PathLayerInput{Ro: []string{"global.txt"}},
+		Project: PathLayerInput{Ro: []string{"project.txt"}},
+		CLI:     PathLayerInput{Ro: []string{"cli.txt"}},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 4 {
+		t.Fatalf("expected 4 resolved paths, got %d", len(result))
+	}
+
+	// Check sources are preserved (results should be in layer order)
+	expected := []PathSource{PathSourcePreset, PathSourceGlobal, PathSourceProject, PathSourceCLI}
+	for i, exp := range expected {
+		if result[i].Source != exp {
+			t.Errorf("result[%d].Source = %q, want %q", i, result[i].Source, exp)
+		}
+	}
+}
+
+func Test_ResolvePaths_Preserves_Access_Levels(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create files for each access level
+	roFile := filepath.Join(workDir, "readonly.txt")
+	rwFile := filepath.Join(workDir, "readwrite.txt")
+	excludeFile := filepath.Join(workDir, "excluded.txt")
+
+	mustCreateFile(t, roFile, "")
+	mustCreateFile(t, rwFile, "")
+	mustCreateFile(t, excludeFile, "")
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro:      []string{"readonly.txt"},
+			Rw:      []string{"readwrite.txt"},
+			Exclude: []string{"excluded.txt"},
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 3 {
+		t.Fatalf("expected 3 resolved paths, got %d", len(result))
+	}
+
+	// Check access levels (results should be in ro, rw, exclude order)
+	expectedAccess := []PathAccess{PathAccessRo, PathAccessRw, PathAccessExclude}
+	for i, exp := range expectedAccess {
+		if result[i].Access != exp {
+			t.Errorf("result[%d].Access = %q, want %q", i, result[i].Access, exp)
+		}
+	}
+}
+
+func Test_ResolvePaths_Expands_Tilde_Paths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create file in home directory
+	homeFile := filepath.Join(homeDir, ".config", "test.json")
+	mustCreateFile(t, homeFile, "")
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"~/.config/test.json"},
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 resolved path, got %d", len(result))
+	}
+
+	if result[0].Resolved != homeFile {
+		t.Errorf("expected %q, got %q", homeFile, result[0].Resolved)
+	}
+
+	if result[0].Original != "~/.config/test.json" {
+		t.Errorf("original should be preserved, got %q", result[0].Original)
+	}
+}
+
+func Test_ResolvePaths_Expands_Glob_Patterns(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create multiple matching files
+	mustCreateFile(t, filepath.Join(workDir, "pkg1", "config.json"), "")
+	mustCreateFile(t, filepath.Join(workDir, "pkg2", "config.json"), "")
+	mustCreateFile(t, filepath.Join(workDir, "pkg3", "other.json"), "") // Won't match
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"*/config.json"},
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 resolved paths from glob, got %d: %v", len(result), result)
+	}
+
+	// Both should have same original pattern
+	for _, r := range result {
+		if r.Original != "*/config.json" {
+			t.Errorf("original should be preserved as pattern, got %q", r.Original)
+		}
+	}
+}
+
+func Test_ResolvePaths_Integration_Real_Filesystem(t *testing.T) {
+	t.Parallel()
+
+	// Create a realistic project structure
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "project")
+
+	// Home directory structure
+	mustCreateFile(t, filepath.Join(homeDir, ".ssh", "id_rsa"), "secret")
+	mustCreateFile(t, filepath.Join(homeDir, ".config", "agent-sandbox", "config.json"), "{}")
+
+	// Project directory structure
+	mustCreateFile(t, filepath.Join(workDir, "src", "main.go"), "package main")
+	mustCreateFile(t, filepath.Join(workDir, "packages", "client", "biome.json"), "{}")
+	mustCreateFile(t, filepath.Join(workDir, "packages", "server", "biome.json"), "{}")
+	mustCreateFile(t, filepath.Join(workDir, ".git", "config"), "[core]")
+	mustCreateFile(t, filepath.Join(workDir, ".env"), "SECRET=value")
+
+	// Create symlink
+	realConfig := filepath.Join(workDir, "config", "real.json")
+	mustCreateFile(t, realConfig, "{}")
+
+	symConfig := filepath.Join(workDir, "config.json")
+
+	err := os.Symlink(realConfig, symConfig)
+	if err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	input := ResolvePathsInput{
+		Preset: PathLayerInput{
+			Exclude: []string{"~/.ssh"}, // Exclude secrets
+		},
+		Global: PathLayerInput{
+			Ro: []string{"~/.config/agent-sandbox/config.json"},
+		},
+		Project: PathLayerInput{
+			Ro: []string{
+				"packages/*/biome.json", // Glob pattern
+				".git/config",
+			},
+			Rw: []string{"src"},
+		},
+		CLI: PathLayerInput{
+			Exclude: []string{".env"},
+			Ro:      []string{"config.json"}, // Symlink
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Expected: 1 preset exclude, 1 global ro, 2 project ro (glob), 1 project ro, 1 project rw, 1 cli exclude, 1 cli ro
+	if len(result) != 8 {
+		t.Logf("results: %+v", result)
+		t.Fatalf("expected 8 resolved paths, got %d", len(result))
+	}
+
+	// Verify symlink was resolved
+	var foundSymlink bool
+
+	for _, r := range result {
+		if r.Original == "config.json" {
+			foundSymlink = true
+
+			if r.Resolved != realConfig {
+				t.Errorf("symlink should resolve to %q, got %q", realConfig, r.Resolved)
+			}
+		}
+	}
+
+	if !foundSymlink {
+		t.Error("expected to find resolved symlink in results")
+	}
+
+	// Verify source tracking
+	sources := make(map[PathSource]int)
+	for _, r := range result {
+		sources[r.Source]++
+	}
+
+	if sources[PathSourcePreset] != 1 {
+		t.Errorf("expected 1 preset path, got %d", sources[PathSourcePreset])
+	}
+
+	if sources[PathSourceGlobal] != 1 {
+		t.Errorf("expected 1 global path, got %d", sources[PathSourceGlobal])
+	}
+
+	if sources[PathSourceProject] != 4 { // 2 from glob + 1 git config + 1 src
+		t.Errorf("expected 4 project paths, got %d", sources[PathSourceProject])
+	}
+
+	if sources[PathSourceCLI] != 2 {
+		t.Errorf("expected 2 CLI paths, got %d", sources[PathSourceCLI])
+	}
+}
+
+func Test_ResolvePaths_Returns_Empty_For_Empty_Input(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	input := ResolvePathsInput{
+		HomeDir: dir,
+		WorkDir: dir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected 0 paths for empty input, got %d", len(result))
+	}
+}
+
+func Test_ResolvePaths_Returns_Error_For_Empty_Pattern(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{""}, // Empty pattern
+		},
+		HomeDir: dir,
+		WorkDir: dir,
+	}
+
+	_, err := ResolvePaths(&input)
+	if err == nil {
+		t.Fatal("expected error for empty pattern, got nil")
+	}
+
+	if !errors.Is(err, ErrEmptyPathPattern) {
+		t.Errorf("expected ErrEmptyPathPattern, got: %v", err)
+	}
+}
+
+func Test_ResolvePaths_Multiple_Globs_Same_Pattern(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
+	workDir := filepath.Join(dir, "work")
+
+	mustCreateDir(t, homeDir)
+	mustCreateDir(t, workDir)
+
+	// Create files that match
+	mustCreateFile(t, filepath.Join(workDir, "a.txt"), "")
+	mustCreateFile(t, filepath.Join(workDir, "b.txt"), "")
+	mustCreateFile(t, filepath.Join(workDir, "c.txt"), "")
+
+	input := ResolvePathsInput{
+		CLI: PathLayerInput{
+			Ro: []string{"*.txt"},
+		},
+		HomeDir: homeDir,
+		WorkDir: workDir,
+	}
+
+	result, err := ResolvePaths(&input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result) != 3 {
+		t.Errorf("expected 3 paths from glob, got %d: %v", len(result), result)
+	}
+
+	// All should have same original pattern
+	for _, r := range result {
+		if r.Original != "*.txt" {
+			t.Errorf("original should be pattern '*.txt', got %q", r.Original)
+		}
+	}
 }
