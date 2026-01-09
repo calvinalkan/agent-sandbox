@@ -69,6 +69,11 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Create force-kill channel for signal handling
+	// This is closed when a second signal or timeout requires immediate termination
+	forceKillCh := make(chan struct{})
+	ctx = WithForceKillCh(ctx, forceKillCh)
+
 	// Determine if we need to load config (exec needs it, check doesn't)
 	cmdName := commandAndArgs[0]
 
@@ -131,7 +136,7 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		return exitCode
 	case <-sigCh:
 		fprintln(stderr, "Interrupted, waiting up to 10s for cleanup... (Ctrl+C again to force exit)")
-		cancel()
+		cancel() // This triggers SIGTERM to the sandboxed process
 	}
 
 	// Wait for completion, timeout, or second signal
@@ -142,10 +147,14 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		return 130
 	case <-time.After(10 * time.Second):
 		fprintln(stderr, "Cleanup timed out, forced exit.")
+		close(forceKillCh) // Trigger SIGKILL
+		<-done             // Wait for actual termination
 
 		return 130
 	case <-sigCh:
 		fprintln(stderr, "Forced exit.")
+		close(forceKillCh) // Trigger SIGKILL
+		<-done             // Wait for actual termination
 
 		return 130
 	}

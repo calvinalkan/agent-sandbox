@@ -9,13 +9,33 @@ import (
 	"syscall"
 )
 
+// forceKillChKey is the context key for the force-kill channel.
+type forceKillChKey struct{}
+
+// WithForceKillCh returns a context with a force-kill channel.
+// When the channel is closed, ExecuteSandbox will send SIGKILL to the sandboxed process.
+func WithForceKillCh(ctx context.Context, ch <-chan struct{}) context.Context {
+	return context.WithValue(ctx, forceKillChKey{}, ch)
+}
+
+// getForceKillCh retrieves the force-kill channel from context.
+// Returns nil if not set.
+func getForceKillCh(ctx context.Context) <-chan struct{} {
+	ch, _ := ctx.Value(forceKillChKey{}).(<-chan struct{})
+
+	return ch
+}
+
 // ExecuteSandbox runs bwrap with the generated arguments.
 // All environment variables from the parent process are passed through unchanged.
 // Returns the exit code from the sandboxed process.
 //
-// When the context is cancelled, SIGTERM is sent to the sandboxed process to allow
-// graceful shutdown. The process may exit with any code; context cancellation is
-// signaled separately via the returned error.
+// Signal handling:
+//   - When ctx is cancelled, SIGTERM is sent for graceful shutdown
+//   - When the force-kill channel (from WithForceKillCh) is closed, SIGKILL is sent
+//
+// The process may exit with any code; context cancellation is signaled separately
+// via the returned error.
 func ExecuteSandbox(
 	ctx context.Context,
 	bwrapArgs []string,
@@ -47,35 +67,63 @@ func ExecuteSandbox(
 		return 1, fmt.Errorf("starting bwrap: %w", err)
 	}
 
-	// Watch for context cancellation in a goroutine
-	// When cancelled, send SIGTERM to allow graceful shutdown
-	done := make(chan struct{})
+	// Get force-kill channel from context (may be nil)
+	forceKillCh := getForceKillCh(ctx)
+
+	// Wait for process completion in a goroutine
+	waitDone := make(chan error, 1)
 
 	go func() {
-		select {
-		case <-ctx.Done():
-			// Context cancelled - send SIGTERM for graceful shutdown
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-		case <-done:
-			// Process exited normally, nothing to do
-		}
+		waitDone <- cmd.Wait()
 	}()
 
-	// Wait for process to complete
-	err = cmd.Wait()
+	// Wait for: process completion, context cancellation (SIGTERM), or force-kill (SIGKILL)
+	select {
+	case waitErr := <-waitDone:
+		// Process completed normally - extract exit code
+		return extractExitCode(waitErr)
 
-	close(done)
+	case <-ctx.Done():
+		// Context cancelled - send SIGTERM for graceful shutdown
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
+		// Now wait for either process completion or force-kill
+		select {
+		case waitErr := <-waitDone:
+			return extractExitCode(waitErr)
+		case <-forceKillCh:
+			// Force kill requested - send SIGKILL
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
 
-	// Extract exit code
-	if err != nil {
+			<-waitDone // Wait for process to actually terminate
+
+			return 0, nil
+		}
+
+	case <-forceKillCh:
+		// Force kill without SIGTERM first
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+
+		<-waitDone
+
+		return 0, nil
+	}
+}
+
+// extractExitCode returns the exit code from a Wait() error.
+func extractExitCode(waitErr error) (int, error) {
+	if waitErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(waitErr, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
-		// Some other error (e.g., process couldn't be started properly)
-		return 1, fmt.Errorf("waiting for bwrap: %w", err)
+
+		return 1, fmt.Errorf("waiting for bwrap: %w", waitErr)
 	}
 
 	return 0, nil

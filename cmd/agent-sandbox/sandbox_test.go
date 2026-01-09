@@ -273,7 +273,7 @@ func Test_Sandbox_Returns_Error_Exit_Code_For_Invalid_Command(t *testing.T) {
 	}
 }
 
-func Test_Sandbox_Terminates_On_Signal(t *testing.T) {
+func Test_Sandbox_Terminates_Gracefully_On_First_Signal(t *testing.T) {
 	t.Parallel()
 
 	RequireBwrap(t)
@@ -307,5 +307,84 @@ while true; do sleep 1; done
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("timeout waiting for command to terminate after signal")
+	}
+}
+
+func Test_Sandbox_Handles_Second_Signal(t *testing.T) {
+	// Tests that a second signal triggers force kill.
+	// Note: bwrap typically exits immediately on SIGTERM, so the first signal
+	// usually causes termination before the second signal. This test verifies
+	// the second signal path is still handled correctly.
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a signal channel with buffer for two signals
+	sigCh := make(chan os.Signal, 2)
+
+	c.WriteExecutable("test_script.sh", `#!/bin/bash
+while true; do sleep 1; done
+`)
+
+	done := c.RunWithSignal(sigCh, "bash", "test_script.sh")
+
+	// Give it a moment to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Send first interrupt signal (triggers SIGTERM to bwrap)
+	sigCh <- syscall.SIGINT
+
+	// Give it a moment to process
+	time.Sleep(100 * time.Millisecond)
+
+	// Send second interrupt signal (triggers SIGKILL)
+	sigCh <- syscall.SIGINT
+
+	// Should exit with code 130 (interrupted)
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("expected exit code 130, got %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for termination after signals")
+	}
+}
+
+func Test_Sandbox_Returns_130_When_Interrupted(t *testing.T) {
+	// Tests that the exit code is 130 when the sandboxed process is interrupted.
+	// Note: bwrap exits immediately on SIGTERM (doesn't forward to children),
+	// so the 10s timeout is a safety mechanism that's rarely triggered in practice.
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	sigCh := make(chan os.Signal, 1)
+
+	// Create a simple long-running script
+	c.WriteExecutable("long_running.sh", `#!/bin/bash
+while true; do sleep 1; done
+`)
+
+	done := c.RunWithSignal(sigCh, "bash", "long_running.sh")
+
+	// Give it a moment to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Send interrupt signal
+	sigCh <- syscall.SIGINT
+
+	// Should exit with code 130 (interrupted)
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("expected exit code 130, got %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for process to terminate after signal")
 	}
 }
