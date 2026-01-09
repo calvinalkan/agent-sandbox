@@ -558,8 +558,7 @@ func Test_Exec_Succeeds_When_Home_Is_Valid(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
-	// Use the temp dir as HOME (it's valid)
-	c.Env["HOME"] = c.Dir
+	// HOME is auto-set to c.Dir by NewCLITester
 
 	_, stderr, code := c.Run("exec", "echo", "hello")
 

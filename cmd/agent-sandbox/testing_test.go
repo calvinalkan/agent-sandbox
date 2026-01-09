@@ -5,13 +5,185 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// ============================================================================
+// Test binary management - build once, use in all tests
+// ============================================================================
+
+// osLinux is the GOOS value for Linux, defined as a constant to satisfy goconst.
+const osLinux = "linux"
+
+// testBinary holds the path to the compiled agent-sandbox binary.
+// Set by TestMain for tests that need the real binary.
+var testBinary string
+
+// TestMain builds the agent-sandbox binary once for all tests.
+func TestMain(m *testing.M) {
+	// Build the binary once for all tests
+	tmpDir, err := os.MkdirTemp("", "agent-sandbox-test-")
+	if err != nil {
+		log.Fatalf("failed to create temp dir for test binary: %v", err)
+	}
+
+	testBinary = filepath.Join(tmpDir, "agent-sandbox")
+
+	cmd := exec.Command("go", "build", "-o", testBinary, ".")
+	cmd.Stderr = os.Stderr
+
+	err = cmd.Run()
+	if err != nil {
+		// Clean up temp dir on build failure
+		_ = os.RemoveAll(tmpDir)
+
+		log.Fatalf("failed to build test binary: %v", err)
+	}
+
+	// Run tests
+	code := m.Run()
+
+	// Clean up
+	_ = os.RemoveAll(tmpDir)
+
+	os.Exit(code)
+}
+
+// BinaryPath returns the path to the compiled agent-sandbox binary.
+// Skips the test if the binary is not available.
+func BinaryPath(t *testing.T) string {
+	t.Helper()
+
+	if testBinary == "" {
+		t.Skip("test binary not built (run via go test, not individual test)")
+	}
+
+	return testBinary
+}
+
+// RunBinary executes the compiled agent-sandbox binary with the given args.
+// Returns stdout, stderr, and exit code.
+// Use this for tests that need the real binary (e.g., check inside sandbox).
+func RunBinary(t *testing.T, args ...string) (string, string, int) {
+	t.Helper()
+
+	binary := BinaryPath(t)
+
+	var outBuf, errBuf bytes.Buffer
+
+	cmd := exec.Command(binary, args...)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	err := cmd.Run()
+	code := 0
+
+	exitErr := &exec.ExitError{}
+	if errors.As(err, &exitErr) {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("failed to run binary: %v", err)
+	}
+
+	return outBuf.String(), errBuf.String(), code
+}
+
+// RunBinaryWithEnv executes the compiled binary with custom environment.
+// Env is a map of key=value pairs that will be set in addition to the
+// minimal required environment (PATH).
+func RunBinaryWithEnv(t *testing.T, env map[string]string, args ...string) (string, string, int) {
+	t.Helper()
+
+	binary := BinaryPath(t)
+
+	var outBuf, errBuf bytes.Buffer
+
+	cmd := exec.Command(binary, args...)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	// Build environment from map
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	// Ensure PATH is always set
+	if _, ok := env["PATH"]; !ok {
+		cmd.Env = append(cmd.Env, "PATH="+os.Getenv("PATH"))
+	}
+
+	err := cmd.Run()
+	code := 0
+
+	exitErr := &exec.ExitError{}
+	if errors.As(err, &exitErr) {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("failed to run binary: %v", err)
+	}
+
+	return outBuf.String(), errBuf.String(), code
+}
+
+// ============================================================================
+// Skip helpers for platform and dependency checks
+// ============================================================================
+
+// RequireLinux skips the test if not running on Linux.
+func RequireLinux(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS != osLinux {
+		t.Skipf("test requires Linux, running on %s", runtime.GOOS)
+	}
+}
+
+// RequireBwrap skips the test if bwrap is not installed.
+func RequireBwrap(t *testing.T) {
+	t.Helper()
+
+	RequireLinux(t)
+
+	_, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Skip("test requires bwrap (bubblewrap), not installed")
+	}
+}
+
+// RequireGit skips the test if git is not installed.
+func RequireGit(t *testing.T) {
+	t.Helper()
+
+	_, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("test requires git, not installed")
+	}
+}
+
+// RequireDocker skips the test if docker is not installed or not running.
+func RequireDocker(t *testing.T) {
+	t.Helper()
+
+	_, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("test requires docker, not installed")
+	}
+
+	// Check if docker daemon is running
+	cmd := exec.Command("docker", "info")
+
+	err = cmd.Run()
+	if err != nil {
+		t.Skip("test requires docker daemon to be running")
+	}
+}
 
 // CLI provides a clean interface for running CLI commands in tests.
 // It manages a temp directory and environment variables.
@@ -22,24 +194,35 @@ type CLI struct {
 }
 
 // NewCLITester creates a new test CLI with a temp directory.
+// The environment is pre-seeded with HOME (pointing to Dir) and PATH
+// so that sandboxed commands can run without manual env setup.
 func NewCLITester(t *testing.T) *CLI {
 	t.Helper()
 
+	dir := t.TempDir()
+
 	return &CLI{
 		t:   t,
-		Dir: t.TempDir(),
-		Env: map[string]string{},
+		Dir: dir,
+		Env: map[string]string{
+			"HOME": dir,
+			"PATH": os.Getenv("PATH"),
+		},
 	}
 }
 
 // NewCLITesterAt creates a CLI tester that runs from a specific directory.
+// The environment is pre-seeded with HOME (pointing to dir) and PATH.
 func NewCLITesterAt(t *testing.T, dir string) *CLI {
 	t.Helper()
 
 	return &CLI{
 		t:   t,
 		Dir: dir,
-		Env: map[string]string{},
+		Env: map[string]string{
+			"HOME": dir,
+			"PATH": os.Getenv("PATH"),
+		},
 	}
 }
 
@@ -289,6 +472,8 @@ type GitRepo struct {
 func NewGitRepo(t *testing.T) *GitRepo {
 	t.Helper()
 
+	RequireGit(t)
+
 	dir := t.TempDir()
 	repo := &GitRepo{t: t, Dir: dir}
 	repo.run("init")
@@ -303,6 +488,8 @@ func NewGitRepo(t *testing.T) *GitRepo {
 // Skips the test if git is not installed.
 func NewGitRepoAt(t *testing.T, dir string) *GitRepo {
 	t.Helper()
+
+	RequireGit(t)
 
 	err := os.MkdirAll(dir, 0o750)
 	if err != nil {
@@ -463,4 +650,154 @@ func (r *GitRepo) run(args ...string) {
 
 		r.t.Fatalf("git %v failed: %v\noutput: %s", args, err, output)
 	}
+}
+
+// ============================================================================
+// Test helper tests
+// ============================================================================
+
+func Test_BinaryPath_Returns_Compiled_Binary_Path(t *testing.T) {
+	t.Parallel()
+
+	path := BinaryPath(t)
+
+	if path == "" {
+		t.Fatal("BinaryPath returned empty string")
+	}
+
+	// Verify the file exists
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("binary path %q does not exist: %v", path, err)
+	}
+
+	// Verify it's executable (not a directory)
+	if info.IsDir() {
+		t.Fatalf("binary path %q is a directory", path)
+	}
+}
+
+func Test_RunBinary_Executes_Binary_And_Returns_Output(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, exitCode := RunBinary(t, "--help")
+
+	if exitCode != 0 {
+		t.Errorf("expected exit code 0 for --help, got %d", exitCode)
+	}
+
+	if !strings.Contains(stdout, "agent-sandbox") {
+		t.Errorf("expected stdout to contain 'agent-sandbox', got: %s", stdout)
+	}
+}
+
+func Test_RunBinary_Returns_NonZero_Exit_Code_On_Error(t *testing.T) {
+	t.Parallel()
+
+	_, stderr, exitCode := RunBinary(t, "--unknown-flag")
+
+	if exitCode == 0 {
+		t.Error("expected non-zero exit code for unknown flag")
+	}
+
+	if !strings.Contains(stderr, "unknown flag") {
+		t.Errorf("expected stderr to contain 'unknown flag', got: %s", stderr)
+	}
+}
+
+func Test_RunBinaryWithEnv_Passes_Custom_Environment(t *testing.T) {
+	t.Parallel()
+
+	// Use a custom HOME that doesn't exist - exec should fail
+	env := map[string]string{
+		"HOME": "/nonexistent/path/for/testing",
+	}
+
+	_, stderr, exitCode := RunBinaryWithEnv(t, env, "exec", "echo", "hello")
+
+	// Should fail because HOME doesn't exist
+	if exitCode == 0 {
+		t.Error("expected non-zero exit code when HOME doesn't exist")
+	}
+
+	if !strings.Contains(stderr, "cannot determine home directory") {
+		t.Errorf("expected error about home directory, got: %s", stderr)
+	}
+}
+
+func Test_NewCLITester_Seeds_Default_Env(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Verify HOME is set to the temp dir
+	if c.Env["HOME"] != c.Dir {
+		t.Errorf("expected HOME=%q, got %q", c.Dir, c.Env["HOME"])
+	}
+
+	// Verify PATH is set
+	if c.Env["PATH"] == "" {
+		t.Error("expected PATH to be set")
+	}
+}
+
+func Test_NewCLITesterAt_Seeds_Default_Env(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	c := NewCLITesterAt(t, dir)
+
+	// Verify HOME is set to the specified dir
+	if c.Env["HOME"] != dir {
+		t.Errorf("expected HOME=%q, got %q", dir, c.Env["HOME"])
+	}
+
+	// Verify PATH is set
+	if c.Env["PATH"] == "" {
+		t.Error("expected PATH to be set")
+	}
+}
+
+func Test_RequireLinux_Does_Not_Skip_On_Linux(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != osLinux {
+		t.Skip("test only runs on Linux")
+	}
+
+	// Should not skip on Linux
+	RequireLinux(t)
+	// If we get here, RequireLinux didn't skip
+}
+
+func Test_RequireGit_Does_Not_Skip_When_Git_Available(t *testing.T) {
+	t.Parallel()
+
+	// First check if git is available
+	_, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not installed")
+	}
+
+	// Should not skip when git is available
+	RequireGit(t)
+	// If we get here, RequireGit didn't skip
+}
+
+func Test_RequireBwrap_Does_Not_Skip_When_Bwrap_Available(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != osLinux {
+		t.Skip("bwrap only available on Linux")
+	}
+
+	// First check if bwrap is available
+	_, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Skip("bwrap not installed")
+	}
+
+	// Should not skip when bwrap is available
+	RequireBwrap(t)
+	// If we get here, RequireBwrap didn't skip
 }
