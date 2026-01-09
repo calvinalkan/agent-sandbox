@@ -4,6 +4,8 @@ Study @TECHNICAL_STEERING.md
 Start your assignined task by running `tk start $$ID`, this will give you detailed
 informat about your assigned task. You must only work on this task.
 
+Ultrathink about the task first.
+
 After starting, give a quick TL;DR message to the user about the nature
 of the task (the title is usually good enough).
 
@@ -11,7 +13,7 @@ Always compare the current state of the code with the specification.
 If you think that a ticket is no longer applicable, you can close it and commit with a message
 that explains why. If you discover new issues, you can create a new ticket (`tk create --help`)
 
-Implement the task, ensure all acceptance criteria are met, and all e2e tests are authored for new functionality.
+Implement the task, ensure all acceptance criteria are met, and all e2e tests are authored for new functionality. Use ultrathink.
 
 All functioanlity should have tests that erorr handling works as expected.
 
