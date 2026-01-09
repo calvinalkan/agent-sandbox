@@ -121,6 +121,11 @@ type Config struct {
 	// LoadedConfigFiles tracks which config files were loaded (for debug output).
 	// Key is the config type (global, project, explicit), value is the path.
 	LoadedConfigFiles map[string]string `json:"-"`
+
+	// Source-tracked filesystem paths for correct debug output labeling.
+	// These are populated during config loading to preserve path sources.
+	GlobalFilesystem  FilesystemConfig `json:"-"`
+	ProjectFilesystem FilesystemConfig `json:"-"`
 }
 
 // FilesystemConfig holds filesystem access rules.
@@ -200,6 +205,8 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 		if findErr == nil {
 			globalCfg, loadErr := loadConfigFile(globalConfigPath)
 			if loadErr == nil {
+				// Store global filesystem paths separately for source tracking
+				cfg.GlobalFilesystem = globalCfg.Filesystem
 				cfg = mergeConfigs(&cfg, &globalCfg)
 				cfg.LoadedConfigFiles["global"] = globalConfigPath
 			} else {
@@ -226,6 +233,8 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 			return Config{}, err
 		}
 
+		// Store explicit config filesystem paths as "project" for source tracking
+		cfg.ProjectFilesystem = explicitCfg.Filesystem
 		cfg = mergeConfigs(&cfg, &explicitCfg)
 		cfg.LoadedConfigFiles["explicit"] = configPath
 	} else {
@@ -236,6 +245,8 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 		if findErr == nil {
 			projectCfg, loadErr := loadConfigFile(projectConfigPath)
 			if loadErr == nil {
+				// Store project filesystem paths separately for source tracking
+				cfg.ProjectFilesystem = projectCfg.Filesystem
 				cfg = mergeConfigs(&cfg, &projectCfg)
 				cfg.LoadedConfigFiles["project"] = projectConfigPath
 			} else {

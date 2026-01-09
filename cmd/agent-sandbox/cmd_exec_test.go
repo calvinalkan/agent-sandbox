@@ -169,79 +169,119 @@ func Test_ApplyExecFlags_Docker_Overrides_Config(t *testing.T) {
 	}
 }
 
-func Test_ApplyExecFlags_Ro_Appends_To_Config(t *testing.T) {
+func Test_ApplyExecFlags_Does_Not_Modify_Filesystem_Paths(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
 		Filesystem: FilesystemConfig{
-			Ro: []string{"/existing"},
-		},
-	}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("ro", nil, "")
-	_ = flags.Parse([]string{"--ro", "/new1", "--ro", "/new2"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	expected := []string{"/existing", "/new1", "/new2"}
-	if len(cfg.Filesystem.Ro) != len(expected) {
-		t.Errorf("expected %v, got %v", expected, cfg.Filesystem.Ro)
-	}
-
-	for i, v := range expected {
-		if cfg.Filesystem.Ro[i] != v {
-			t.Errorf("expected ro[%d]=%q, got %q", i, v, cfg.Filesystem.Ro[i])
-		}
-	}
-}
-
-func Test_ApplyExecFlags_Rw_Appends_To_Config(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{
-		Filesystem: FilesystemConfig{
-			Rw: []string{"/existing"},
-		},
-	}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("rw", nil, "")
-	_ = flags.Parse([]string{"--rw", "/new"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(cfg.Filesystem.Rw) != 2 || cfg.Filesystem.Rw[1] != "/new" {
-		t.Errorf("expected rw to have /existing and /new, got %v", cfg.Filesystem.Rw)
-	}
-}
-
-func Test_ApplyExecFlags_Exclude_Appends_To_Config(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{
-		Filesystem: FilesystemConfig{
+			Ro:      []string{"/existing-ro"},
+			Rw:      []string{"/existing-rw"},
 			Exclude: []string{".env"},
 		},
 	}
 
 	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.StringArray("ro", nil, "")
+	flags.StringArray("rw", nil, "")
 	flags.StringArray("exclude", nil, "")
-	_ = flags.Parse([]string{"--exclude", ".secrets"})
+	_ = flags.Parse([]string{"--ro", "/new-ro", "--rw", "/new-rw", "--exclude", ".secrets"})
 
 	err := applyExecFlags(&cfg, flags)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(cfg.Filesystem.Exclude) != 2 || cfg.Filesystem.Exclude[1] != ".secrets" {
-		t.Errorf("expected exclude to have .env and .secrets, got %v", cfg.Filesystem.Exclude)
+	// Verify filesystem paths are NOT modified by applyExecFlags
+	// CLI paths are now extracted separately via getCLIFilesystemPaths
+	if len(cfg.Filesystem.Ro) != 1 || cfg.Filesystem.Ro[0] != "/existing-ro" {
+		t.Errorf("expected ro to be unchanged [/existing-ro], got %v", cfg.Filesystem.Ro)
+	}
+
+	if len(cfg.Filesystem.Rw) != 1 || cfg.Filesystem.Rw[0] != "/existing-rw" {
+		t.Errorf("expected rw to be unchanged [/existing-rw], got %v", cfg.Filesystem.Rw)
+	}
+
+	if len(cfg.Filesystem.Exclude) != 1 || cfg.Filesystem.Exclude[0] != ".env" {
+		t.Errorf("expected exclude to be unchanged [.env], got %v", cfg.Filesystem.Exclude)
+	}
+}
+
+func Test_GetCLIFilesystemPaths_Extracts_Ro_Paths(t *testing.T) {
+	t.Parallel()
+
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.StringArray("ro", nil, "")
+	flags.StringArray("rw", nil, "")
+	flags.StringArray("exclude", nil, "")
+	_ = flags.Parse([]string{"--ro", "/new1", "--ro", "/new2"})
+
+	result := getCLIFilesystemPaths(flags)
+
+	expected := []string{"/new1", "/new2"}
+	if len(result.Ro) != len(expected) {
+		t.Errorf("expected %v, got %v", expected, result.Ro)
+	}
+
+	for i, v := range expected {
+		if result.Ro[i] != v {
+			t.Errorf("expected ro[%d]=%q, got %q", i, v, result.Ro[i])
+		}
+	}
+}
+
+func Test_GetCLIFilesystemPaths_Extracts_Rw_Paths(t *testing.T) {
+	t.Parallel()
+
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.StringArray("ro", nil, "")
+	flags.StringArray("rw", nil, "")
+	flags.StringArray("exclude", nil, "")
+	_ = flags.Parse([]string{"--rw", "/new"})
+
+	result := getCLIFilesystemPaths(flags)
+
+	if len(result.Rw) != 1 || result.Rw[0] != "/new" {
+		t.Errorf("expected rw to have /new, got %v", result.Rw)
+	}
+}
+
+func Test_GetCLIFilesystemPaths_Extracts_Exclude_Paths(t *testing.T) {
+	t.Parallel()
+
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.StringArray("ro", nil, "")
+	flags.StringArray("rw", nil, "")
+	flags.StringArray("exclude", nil, "")
+	_ = flags.Parse([]string{"--exclude", ".secrets"})
+
+	result := getCLIFilesystemPaths(flags)
+
+	if len(result.Exclude) != 1 || result.Exclude[0] != ".secrets" {
+		t.Errorf("expected exclude to have .secrets, got %v", result.Exclude)
+	}
+}
+
+func Test_GetCLIFilesystemPaths_Returns_Empty_When_No_Flags(t *testing.T) {
+	t.Parallel()
+
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.StringArray("ro", nil, "")
+	flags.StringArray("rw", nil, "")
+	flags.StringArray("exclude", nil, "")
+	_ = flags.Parse([]string{})
+
+	result := getCLIFilesystemPaths(flags)
+
+	if len(result.Ro) != 0 {
+		t.Errorf("expected empty ro, got %v", result.Ro)
+	}
+
+	if len(result.Rw) != 0 {
+		t.Errorf("expected empty rw, got %v", result.Rw)
+	}
+
+	if len(result.Exclude) != 0 {
+		t.Errorf("expected empty exclude, got %v", result.Exclude)
 	}
 }
 

@@ -848,3 +848,86 @@ func Test_Sandbox_CLI_Flag_Overrides_Config_File_Command(t *testing.T) {
 
 	AssertContains(t, stdout, "hello")
 }
+
+// ============================================================================
+// E2E Tests: Invalid Command Preset Usage
+//
+// These tests verify that using a command preset (like @git) for a different
+// command (like cat) is rejected with a clear error message.
+// ============================================================================
+
+func Test_Sandbox_Rejects_Git_Preset_For_Non_Git_Command_Via_Config(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create config file with @git preset for cat (invalid)
+	c.WriteFile(".agent-sandbox.json", `{
+		"commands": {
+			"cat": "@git"
+		}
+	}`)
+
+	_, stderr, code := c.Run("cat", "/etc/hostname")
+
+	if code == 0 {
+		t.Error("expected error when using @git preset for non-git command")
+	}
+
+	// Should have a clear error message
+	if !strings.Contains(stderr, "@git") || !strings.Contains(stderr, "cat") {
+		t.Errorf("expected error message to mention @git and cat, got: %s", stderr)
+	}
+}
+
+func Test_Sandbox_Rejects_Git_Preset_For_Non_Git_Command_Via_CLI(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	_, stderr, code := c.Run("--cmd", "cat=@git", "cat", "/etc/hostname")
+
+	if code == 0 {
+		t.Error("expected error when using @git preset for non-git command via CLI")
+	}
+
+	// Should have a clear error message
+	if !strings.Contains(stderr, "@git") || !strings.Contains(stderr, "cat") {
+		t.Errorf("expected error message to mention @git and cat, got: %s", stderr)
+	}
+}
+
+func Test_Sandbox_Allows_Git_Preset_For_Git_Command(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+	RequireGit(t)
+
+	// Use setupGitEnv which sets up proper environment for running with @git wrapper
+	env, cleanup := setupGitEnv(t)
+	defer cleanup()
+
+	workDir := env["WORKDIR"]
+
+	// Create config with explicit @git for git (redundant but should be valid)
+	configPath := filepath.Join(workDir, ".agent-sandbox.json")
+
+	err := os.WriteFile(configPath, []byte(`{
+		"commands": {
+			"git": "@git"
+		}
+	}`), 0o644)
+	if err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	// Should work - git --version is not blocked
+	stdout, stderr, code := RunBinaryWithEnv(t, env, "-C", workDir, "git", "--version")
+
+	if code != 0 {
+		t.Errorf("expected git --version to work with explicit @git preset: %s", stderr)
+	}
+
+	AssertContains(t, stdout, "git version")
+}

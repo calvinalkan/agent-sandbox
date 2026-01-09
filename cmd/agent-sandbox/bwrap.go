@@ -141,6 +141,13 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config, emptyFile string) ([]string, e
 		"--tmpfs", "/run",
 	)
 
+	// DNS resolver: bind-mount /etc/resolv.conf target if it's under /run
+	// On systemd-resolved systems, /etc/resolv.conf is a symlink to
+	// /run/systemd/resolve/stub-resolv.conf. Since we mount /run as tmpfs,
+	// the symlink target would be missing. We fix this by bind-mounting
+	// the resolved path after the /run tmpfs.
+	args = append(args, dnsResolverArgs()...)
+
 	// Docker socket handling
 	// Because we bind-mount / (read-only) as the base filesystem, the docker socket
 	// would otherwise be visible inside the sandbox by default (if /var/run is a
@@ -340,4 +347,62 @@ func AddWrapperMounts(args []string, wrapperSetup *WrapperSetup, selfBinary stri
 	}
 
 	return args
+}
+
+// dnsResolverArgs generates bwrap arguments to make DNS resolution work.
+//
+// On many modern Linux systems (Ubuntu, Fedora, etc.), /etc/resolv.conf is a symlink
+// to /run/systemd/resolve/stub-resolv.conf or similar. Since we mount /run as a fresh
+// tmpfs for isolation, the symlink target doesn't exist and DNS resolution breaks.
+//
+// This function:
+// 1. Checks if /etc/resolv.conf exists and is a symlink
+// 2. Resolves the symlink to find the real config file
+// 3. If the target is under /run, bind-mounts it so DNS works
+//
+// Returns empty slice if:
+// - /etc/resolv.conf doesn't exist
+// - /etc/resolv.conf is not a symlink (regular file, already accessible via ro-bind /)
+// - The symlink target is not under /run (already accessible).
+func dnsResolverArgs() []string {
+	resolvConf := "/etc/resolv.conf"
+
+	// Check if it's a symlink
+	linkTarget, err := os.Readlink(resolvConf)
+	if err != nil {
+		// Not a symlink or doesn't exist - no action needed
+		return nil
+	}
+
+	// Resolve to absolute path (symlink might be relative like ../run/...)
+	var resolvedPath string
+	if filepath.IsAbs(linkTarget) {
+		resolvedPath = linkTarget
+	} else {
+		resolvedPath = filepath.Join(filepath.Dir(resolvConf), linkTarget)
+	}
+
+	resolvedPath = filepath.Clean(resolvedPath)
+
+	// Only act if the target is under /run (which we mount as tmpfs)
+	if !isPathUnder(resolvedPath, "/run") {
+		return nil
+	}
+
+	// Verify the source file exists on the host
+	_, err = os.Stat(resolvedPath)
+	if err != nil {
+		return nil
+	}
+
+	// Bind-mount the resolver config file
+	// We need to create the parent directory structure in /run first
+	parentDir := filepath.Dir(resolvedPath)
+
+	// bwrap will create the mount point, but we need to ensure the parent dir exists
+	// We use --dir to create the directory structure
+	return []string{
+		"--dir", parentDir,
+		"--ro-bind", resolvedPath, resolvedPath,
+	}
 }

@@ -117,15 +117,26 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 			// Debug: show preset expansion
 			DebugPresetExpansion(debug, cfg.Filesystem.Presets, getAppliedPresets(cfg.Filesystem.Presets), getRemovedPresets(cfg.Filesystem.Presets))
 
-			// 8. Resolve all paths from all layers
+			// 8. Get CLI filesystem paths (kept separate for source tracking)
+			cliFilesystem := getCLIFilesystemPaths(flags)
+
+			// 9. Resolve all paths from all layers with correct source tracking
 			resolvedPaths, err := ResolvePaths(&ResolvePathsInput{
-				Preset:  PathLayerInput(presetPaths),
-				Global:  PathLayerInput{}, // global config paths are included in merged cfg.Filesystem
-				Project: PathLayerInput{}, // project config paths are included in merged cfg.Filesystem
+				Preset: PathLayerInput(presetPaths),
+				Global: PathLayerInput{
+					Ro:      cfg.GlobalFilesystem.Ro,
+					Rw:      cfg.GlobalFilesystem.Rw,
+					Exclude: cfg.GlobalFilesystem.Exclude,
+				},
+				Project: PathLayerInput{
+					Ro:      cfg.ProjectFilesystem.Ro,
+					Rw:      cfg.ProjectFilesystem.Rw,
+					Exclude: cfg.ProjectFilesystem.Exclude,
+				},
 				CLI: PathLayerInput{
-					Ro:      cfg.Filesystem.Ro,
-					Rw:      cfg.Filesystem.Rw,
-					Exclude: cfg.Filesystem.Exclude,
+					Ro:      cliFilesystem.Ro,
+					Rw:      cliFilesystem.Rw,
+					Exclude: cliFilesystem.Exclude,
 				},
 				HomeDir: homeDir,
 				WorkDir: cfg.EffectiveCwd,
@@ -137,29 +148,35 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 			// Debug: show path resolution results
 			DebugPathResolution(debug, resolvedPaths)
 
-			// 9. Validate working directory is not excluded
+			// 10. Validate working directory is not excluded
 			err = ValidateWorkDirNotExcluded(resolvedPaths, cfg.EffectiveCwd)
 			if err != nil {
 				return err
 			}
 
-			// 10. Apply specificity rules and sort by mount order
+			// 11. Apply specificity rules and sort by mount order
 			sortedPaths := ResolveAndSort(resolvedPaths)
 
-			// 11. Set up temp directory for exclude mounts and wrappers
+			// 12. Set up temp directory for exclude mounts and wrappers
 			tempRes, err := SetupTempDir()
 			if err != nil {
 				return err
 			}
 			defer tempRes.Cleanup()
 
-			// 12. Generate bwrap arguments for filesystem mounts (including excludes)
+			// 13. Generate bwrap arguments for filesystem mounts (including excludes)
 			bwrapArgs, err := BwrapArgs(sortedPaths, cfg, tempRes.EmptyFile)
 			if err != nil {
 				return err
 			}
 
-			// 14. Set up command wrappers
+			// 14. Validate command wrapper rules
+			err = validateCommandRules(cfg.Commands)
+			if err != nil {
+				return err
+			}
+
+			// 15. Set up command wrappers
 			// Debug: show command wrapper configuration
 			DebugCommandWrappers(debug, cfg.Commands)
 
@@ -183,19 +200,19 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				defer wrapperSetup.Cleanup()
 			}
 
-			// 15. Get self binary path for mounting into sandbox
+			// 16. Get self binary path for mounting into sandbox
 			selfBinary, err := getSelfBinaryPath()
 			if err != nil {
 				return err
 			}
 
-			// 16. Add wrapper mounts to bwrap args
+			// 17. Add wrapper mounts to bwrap args
 			bwrapArgs = AddWrapperMounts(bwrapArgs, wrapperSetup, selfBinary, runtimeBase)
 
 			// Debug: show final bwrap arguments
 			DebugBwrapArgs(debug, bwrapArgs)
 
-			// 17. Check for dry-run mode
+			// 18. Check for dry-run mode
 			dryRun, _ := flags.GetBool("dry-run")
 			if dryRun {
 				printDryRunOutput(stdout, bwrapArgs, args)
@@ -203,7 +220,7 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				return nil
 			}
 
-			// 18. Execute the command in the sandbox
+			// 19. Execute the command in the sandbox
 			exitCode, err := ExecuteSandbox(ctx, bwrapArgs, args, env, stdin, stdout, stderr)
 			if err != nil {
 				return err
@@ -216,6 +233,8 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 
 // applyExecFlags applies CLI flag overrides to the config.
 // Only flags that were explicitly set override config values.
+// Note: Path flags (--ro, --rw, --exclude) are NOT applied here - they are
+// retrieved separately via getCLIFilesystemPaths to preserve source tracking.
 func applyExecFlags(cfg *Config, flags *flag.FlagSet) error {
 	if flags.Changed("network") {
 		val, _ := flags.GetBool("network")
@@ -225,22 +244,6 @@ func applyExecFlags(cfg *Config, flags *flag.FlagSet) error {
 	if flags.Changed("docker") {
 		val, _ := flags.GetBool("docker")
 		cfg.Docker = &val
-	}
-
-	// Append CLI paths to config paths
-	if flags.Changed("ro") {
-		vals, _ := flags.GetStringArray("ro")
-		cfg.Filesystem.Ro = append(cfg.Filesystem.Ro, vals...)
-	}
-
-	if flags.Changed("rw") {
-		vals, _ := flags.GetStringArray("rw")
-		cfg.Filesystem.Rw = append(cfg.Filesystem.Rw, vals...)
-	}
-
-	if flags.Changed("exclude") {
-		vals, _ := flags.GetStringArray("exclude")
-		cfg.Filesystem.Exclude = append(cfg.Filesystem.Exclude, vals...)
 	}
 
 	// Parse and apply --cmd flags
@@ -254,6 +257,26 @@ func applyExecFlags(cfg *Config, flags *flag.FlagSet) error {
 	}
 
 	return nil
+}
+
+// getCLIFilesystemPaths extracts filesystem path flags from CLI.
+// These are kept separate from config paths to preserve source tracking for debug output.
+func getCLIFilesystemPaths(flags *flag.FlagSet) FilesystemConfig {
+	var result FilesystemConfig
+
+	if flags.Changed("ro") {
+		result.Ro, _ = flags.GetStringArray("ro")
+	}
+
+	if flags.Changed("rw") {
+		result.Rw, _ = flags.GetStringArray("rw")
+	}
+
+	if flags.Changed("exclude") {
+		result.Exclude, _ = flags.GetStringArray("exclude")
+	}
+
+	return result
 }
 
 // applyCmdFlags parses and applies --cmd KEY=VALUE flags to the config.
@@ -302,6 +325,29 @@ func parseCmdValue(value string) CommandRule {
 
 		return CommandRule{Kind: CommandRuleScript, Value: value}
 	}
+}
+
+// ErrInvalidCommandPreset is returned when a command preset is used for the wrong command.
+var ErrInvalidCommandPreset = errors.New("command preset can only be used for its matching command")
+
+// validateCommandRules checks that command presets are used correctly.
+// For example, @git can only be used with the "git" command.
+func validateCommandRules(commands map[string]CommandRule) error {
+	for cmdName, rule := range commands {
+		if rule.Kind != CommandRulePreset {
+			continue
+		}
+
+		// Extract the command name from the preset (e.g., "@git" -> "git")
+		presetCmd := strings.TrimPrefix(rule.Value, "@")
+
+		if cmdName != presetCmd {
+			return fmt.Errorf("%w: %s preset can only be used for '%s' command, not '%s'",
+				ErrInvalidCommandPreset, rule.Value, presetCmd, cmdName)
+		}
+	}
+
+	return nil
 }
 
 // checkPlatformPrerequisites validates the runtime environment.

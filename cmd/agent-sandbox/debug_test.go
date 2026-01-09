@@ -524,3 +524,110 @@ func Test_DebugBwrapArgs_Outputs_Arguments(t *testing.T) {
 	AssertContains(t, output, "--die-with-parent")
 	AssertContains(t, output, "--ro-bind / /")
 }
+
+// ============================================================================
+// E2E Tests: Debug Output Path Source Tracking
+//
+// These tests verify that --debug output correctly attributes paths to their
+// source (preset, global, project, or cli). This is a regression test for
+// the bug where all paths were labeled as "(from cli)" regardless of source.
+// ============================================================================
+
+func Test_Debug_Output_Shows_Preset_Source(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Run with debug to capture output
+	_, stderr, code := c.Run("--debug", "true")
+
+	if code != 0 {
+		t.Fatalf("command failed with code %d: %s", code, stderr)
+	}
+
+	// Preset paths (like home dir protection) should show "(from preset)"
+	AssertContains(t, stderr, "(from preset)")
+}
+
+func Test_Debug_Output_Shows_Project_Source(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a project config with ro paths
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["src/"],
+			"exclude": [".secrets"]
+		}
+	}`)
+
+	// Create the directories so they resolve
+	c.WriteFile("src/main.go", "package main")
+	c.WriteFile(".secrets/key", "secret")
+
+	_, stderr, code := c.Run("--debug", "true")
+
+	if code != 0 {
+		t.Fatalf("command failed with code %d: %s", code, stderr)
+	}
+
+	// Project config paths should show "(from project)"
+	AssertContains(t, stderr, "src")
+	AssertContains(t, stderr, "(from project)")
+	AssertContains(t, stderr, ".secrets")
+}
+
+func Test_Debug_Output_Shows_CLI_Source(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create directories to make paths resolvable
+	c.WriteFile("docs/readme.md", "# Docs")
+	c.WriteFile(".env", "SECRET=x")
+
+	_, stderr, code := c.Run("--debug", "--ro", "docs/", "--exclude", ".env", "true")
+
+	if code != 0 {
+		t.Fatalf("command failed with code %d: %s", code, stderr)
+	}
+
+	// CLI paths should show "(from cli)"
+	AssertContains(t, stderr, "docs")
+	AssertContains(t, stderr, "(from cli)")
+	AssertContains(t, stderr, ".env")
+}
+
+func Test_Debug_Output_Differentiates_Project_And_CLI_Sources(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create project config with one path
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["project-dir/"]
+		}
+	}`)
+
+	// Create directories
+	c.WriteFile("project-dir/file.txt", "project")
+	c.WriteFile("cli-dir/file.txt", "cli")
+
+	_, stderr, code := c.Run("--debug", "--ro", "cli-dir/", "true")
+
+	if code != 0 {
+		t.Fatalf("command failed with code %d: %s", code, stderr)
+	}
+
+	// Both sources should be visible and distinct
+	AssertContains(t, stderr, "project-dir")
+	AssertContains(t, stderr, "(from project)")
+	AssertContains(t, stderr, "cli-dir")
+	AssertContains(t, stderr, "(from cli)")
+}
