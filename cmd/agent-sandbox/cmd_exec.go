@@ -51,7 +51,7 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 		Short:   "Run command in sandbox",
 		Long:    "Run a command inside the bubblewrap sandbox with configured filesystem access.",
 		Aliases: []string{},
-		Exec: func(_ context.Context, _ io.Reader, stdout, stderr io.Writer, args []string) error {
+		Exec: func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 			err := checkPlatformPrerequisites()
 			if err != nil {
 				return err
@@ -128,9 +128,13 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				return nil
 			}
 
-			fprintln(stderr, "exec command not yet implemented")
+			// Execute the command in the sandbox
+			exitCode, err := ExecuteSandbox(ctx, bwrapArgs, args, env, stdin, stdout, stderr)
+			if err != nil {
+				return err
+			}
 
-			return nil
+			return NewExitCodeError(exitCode)
 		},
 	}
 }

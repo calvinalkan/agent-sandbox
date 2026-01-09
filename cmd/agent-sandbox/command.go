@@ -14,6 +14,26 @@ import (
 // without printing any error message (or the commands handles error output itself).
 var ErrSilentExit = errors.New("")
 
+// ExitCodeError wraps an exit code to be returned from a command.
+// Used when a command needs to propagate a specific exit code from a subprocess.
+type ExitCodeError struct {
+	Code int
+}
+
+func (e *ExitCodeError) Error() string {
+	return fmt.Sprintf("exit code %d", e.Code)
+}
+
+// NewExitCodeError creates an ExitCodeError with the given code.
+// Returns nil if code is 0 (success).
+func NewExitCodeError(code int) error {
+	if code == 0 {
+		return nil
+	}
+
+	return &ExitCodeError{Code: code}
+}
+
 // Command defines a CLI command with unified help generation.
 type Command struct {
 	// Flags defines command-specific flags.
@@ -110,6 +130,12 @@ func (c *Command) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 
 	err = c.Exec(ctx, stdin, stdout, stderr, c.Flags.Args())
 	if err != nil {
+		// Check for explicit exit code from subprocess
+		var exitCodeErr *ExitCodeError
+		if errors.As(err, &exitCodeErr) {
+			return exitCodeErr.Code
+		}
+
 		if !errors.Is(err, ErrSilentExit) {
 			fprintError(stderr, err)
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -85,7 +86,8 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config) ([]string, error) {
 
 // dockerSocketArgs generates bwrap arguments for docker socket handling.
 // When docker is enabled, resolves the socket symlink and binds the real socket.
-// When docker is disabled, masks the socket with /dev/null to prevent access.
+// When docker is disabled, masks the socket with /dev/null to prevent access
+// (only if the socket exists and is not under /run - we mount /run as tmpfs).
 // The socketPath parameter allows testing with temp directories containing real symlinks.
 func dockerSocketArgs(docker *bool, socketPath string) ([]string, error) {
 	// Docker is disabled by default (docker == nil means use default which is false)
@@ -98,13 +100,57 @@ func dockerSocketArgs(docker *bool, socketPath string) ([]string, error) {
 			return nil, fmt.Errorf("%w: %w", ErrDockerSocketNotFound, err)
 		}
 
-		// Bind the real socket to the standard path so clients can always use
-		// /var/run/docker.sock regardless of where the actual socket lives.
-		return []string{"--bind", resolved, socketPath}, nil
+		// Also resolve the parent directory of the socket path to handle symlinks.
+		// On many systems, /var/run is a symlink to /run. Since we mount /run as tmpfs,
+		// we need to bind the socket to the resolved destination path.
+		destResolved, err := filepath.EvalSymlinks(filepath.Dir(socketPath))
+		if err != nil {
+			return nil, fmt.Errorf("%w: cannot resolve socket directory: %w", ErrDockerSocketNotFound, err)
+		}
+
+		destPath := filepath.Join(destResolved, filepath.Base(socketPath))
+
+		// Bind the real socket to the resolved destination path.
+		return []string{"--bind", resolved, destPath}, nil
 	}
 
-	// Docker disabled: mask the socket so it's not usable.
+	// Docker disabled: check if we need to mask the socket.
+	// We only need to mask if:
+	// 1. The socket exists
+	// 2. It resolves to a path outside /run (we mount /run as tmpfs)
+	maskPath := dockerSocketMaskPath(socketPath)
+	if maskPath == "" {
+		return nil, nil
+	}
+
+	// Socket exists outside /run - mask it with /dev/null.
 	// Use /dev/null as the source - this makes the path exist but not be a valid socket.
 	// Docker clients will get "not a socket" error when trying to connect.
-	return []string{"--ro-bind", "/dev/null", socketPath}, nil
+	return []string{"--ro-bind", "/dev/null", maskPath}, nil
+}
+
+// dockerSocketMaskPath returns the path to mask for the docker socket,
+// or empty string if no masking is needed.
+func dockerSocketMaskPath(socketPath string) string {
+	// Check if the socket exists at all.
+	_, err := os.Stat(socketPath)
+	if err != nil {
+		return ""
+	}
+
+	// Resolve the socket path to its real location.
+	// On many systems, /var/run is a symlink to /run. Since we mount /run as tmpfs,
+	// the socket won't be visible there anyway - no masking needed.
+	resolved, err := filepath.EvalSymlinks(socketPath)
+	if err != nil {
+		return ""
+	}
+
+	// If the resolved path is under /run, we don't need to mask it because
+	// we mount /run as a fresh tmpfs (which will be empty).
+	if isPathUnder(resolved, "/run") {
+		return ""
+	}
+
+	return socketPath
 }
