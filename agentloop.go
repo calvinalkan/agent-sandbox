@@ -3,102 +3,427 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
-var tmuxSession string
+// --- Global vars ---
+var (
+	tmuxSession string
+	startTime   time.Time
+	numAgents   int
+	numAgentsMu sync.RWMutex
+	draining    bool
+	drainingMu  sync.RWMutex
+)
 
+func init() {
+	// Derive tmux session name from current directory (needed for socket/pid paths)
+	cwd, _ := os.Getwd()
+	tmuxSession = filepath.Base(cwd) + "-agents"
+}
+
+// --- Main & Command Routing ---
 func main() {
-	numAgents := flag.Int("n", 2, "number of parallel agents")
-	showHelp := flag.Bool("h", false, "show help")
-	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: go run agentloop.go [-n NUM] <prompt-file>")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Options:")
-		fmt.Fprintln(os.Stderr, "  -n NUM  number of parallel agents (default 2)")
-		fmt.Fprintln(os.Stderr, "  -h      show help")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "The prompt file should contain $$ID which gets replaced with the ticket ID.")
-	}
-	flag.Parse()
-
-	if *showHelp {
-		flag.Usage()
-		os.Exit(0)
-	}
-
-	args := flag.Args()
-	if len(args) < 1 {
-		flag.Usage()
+	if len(os.Args) < 2 {
+		printUsage()
 		os.Exit(1)
 	}
-	promptFile := args[0]
 
-	// Verify prompt file exists at startup
+	switch os.Args[1] {
+	case "start":
+		cmdStart(os.Args[2:])
+	case "stop":
+		cmdStop()
+	case "status":
+		cmdStatus(os.Args[2:])
+	case "run":
+		cmdRun(os.Args[2:])
+	case "scale":
+		cmdScale(os.Args[2:])
+	case "drain":
+		cmdDrain()
+	case "daemon":
+		cmdDaemon(os.Args[2:])
+	default:
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "Usage: go run agentloop.go <command> [options]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  start  -n NUM <prompt-file>  Start daemon in background")
+	fmt.Fprintln(os.Stderr, "  stop                         Stop the daemon (kills agents)")
+	fmt.Fprintln(os.Stderr, "  drain                        Stop after current agents finish")
+	fmt.Fprintln(os.Stderr, "  status [-f]                  Show status (-f to follow logs)")
+	fmt.Fprintln(os.Stderr, "  scale  NUM                   Change max parallel agents")
+	fmt.Fprintln(os.Stderr, "  run    -n NUM <prompt-file>  Run in foreground (for debugging)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Options:")
+	fmt.Fprintln(os.Stderr, "  -n NUM  number of parallel agents (default 1)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "The prompt file should contain $$ID which gets replaced with the ticket ID.")
+}
+
+// --- CLI Commands ---
+
+func cmdStart(args []string) {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	numAgents := fs.Int("n", 1, "number of parallel agents")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "error: prompt file required")
+		os.Exit(1)
+	}
+	promptFile := fs.Arg(0)
+
+	// Verify prompt file exists
+	absPrompt, err := filepath.Abs(promptFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := os.Stat(absPrompt); err != nil {
+		fmt.Fprintf(os.Stderr, "error: prompt file not found: %s\n", promptFile)
+		os.Exit(1)
+	}
+
+	// Check if already running
+	if resp, err := sendCommand("ping"); err == nil && resp == "pong" {
+		fmt.Fprintln(os.Stderr, "error: daemon already running")
+		os.Exit(1)
+	}
+
+	// Get current working directory for daemon
+	cwd, _ := os.Getwd()
+
+	// Spawn daemon subprocess
+	executable, err := os.Executable()
+	if err != nil {
+		executable = os.Args[0]
+	}
+
+	daemonArgs := []string{"daemon", "-n", strconv.Itoa(*numAgents), absPrompt}
+	cmd := exec.Command(executable, daemonArgs...)
+	cmd.Dir = cwd
+
+	// Create log file
+	logFile, err := os.OpenFile(logPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating log file: %v\n", err)
+		os.Exit(1)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	// Detach from parent
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "error starting daemon: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write PID file
+	if err := os.WriteFile(pidPath(), []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write pid file: %v\n", err)
+	}
+
+	fmt.Printf("started pid=%d session=%s\n", cmd.Process.Pid, tmuxSession)
+	fmt.Printf("log: %s\n", logPath())
+}
+
+func cmdStop() {
+	// Try graceful stop via socket
+	if resp, err := sendCommand("stop"); err == nil && resp == "ok" {
+		// Wait for daemon to exit
+		for i := 0; i < 30; i++ {
+			time.Sleep(100 * time.Millisecond)
+			if _, err := sendCommand("ping"); err != nil {
+				fmt.Println("stopped")
+				os.Remove(pidPath())
+				os.Remove(socketPath())
+				return
+			}
+		}
+		fmt.Println("stopped (timeout waiting for confirmation)")
+		return
+	}
+
+	// Fallback: read PID and send SIGTERM
+	pidData, err := os.ReadFile(pidPath())
+	if err != nil {
+		fmt.Println("not running")
+		return
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		fmt.Println("not running (invalid pid file)")
+		os.Remove(pidPath())
+		return
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Println("not running")
+		os.Remove(pidPath())
+		return
+	}
+
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		fmt.Println("not running")
+		os.Remove(pidPath())
+		return
+	}
+
+	for i := 0; i < 30; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			break
+		}
+	}
+
+	os.Remove(pidPath())
+	os.Remove(socketPath())
+	fmt.Println("stopped")
+}
+
+func cmdStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	follow := fs.Bool("f", false, "follow log output")
+	fs.Parse(args)
+
+	// First check if running and show current status
+	resp, err := sendCommand("status")
+	if err != nil {
+		fmt.Println("not running")
+		return
+	}
+	fmt.Println(resp)
+
+	if !*follow {
+		return
+	}
+
+	// Follow mode: tail the log file
+	logFile := logPath()
+	if _, err := os.Stat(logFile); err != nil {
+		fmt.Fprintf(os.Stderr, "error: log file not found: %s\n", logFile)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n--- following %s (Ctrl-C to stop) ---\n\n", logFile)
+
+	// Use tail -f for simplicity
+	cmd := exec.Command("tail", "-f", logFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Handle Ctrl-C gracefully
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cmd.Process.Kill()
+	}()
+
+	cmd.Run()
+}
+
+func cmdScale(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "error: scale requires a number")
+		os.Exit(1)
+	}
+
+	n, err := strconv.Atoi(args[0])
+	if err != nil || n < 1 {
+		fmt.Fprintln(os.Stderr, "error: invalid number")
+		os.Exit(1)
+	}
+
+	resp, err := sendCommand(fmt.Sprintf("scale %d", n))
+	if err != nil {
+		fmt.Println("not running")
+		os.Exit(1)
+	}
+	fmt.Println(resp)
+}
+
+func cmdDrain() {
+	resp, err := sendCommand("drain")
+	if err != nil {
+		fmt.Println("not running")
+		os.Exit(1)
+	}
+	fmt.Println(resp)
+}
+
+func cmdRun(args []string) {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	n := fs.Int("n", 1, "number of parallel agents")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "error: prompt file required")
+		os.Exit(1)
+	}
+	promptFile := fs.Arg(0)
+
 	if _, err := os.Stat(promptFile); err != nil {
 		fmt.Fprintf(os.Stderr, "error: prompt file not found: %s\n", promptFile)
 		os.Exit(1)
 	}
 
-	// Derive tmux session name from current directory
-	cwd, _ := os.Getwd()
-	tmuxSession = filepath.Base(cwd) + "-agents"
+	setNumAgents(*n)
 
 	log.SetFlags(log.Ltime)
-	log.Printf("starting: max %d agent(s), tmux=%s", *numAgents, tmuxSession)
+	log.Printf("starting: max %d agent(s), tmux=%s", *n, tmuxSession)
 
-	// Set up signal handling
+	stopCh := make(chan struct{})
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	go func() {
+		<-sigCh
+		close(stopCh)
+	}()
 
+	runLoop(promptFile, stopCh)
+	shutdown()
+}
 
+func cmdDaemon(args []string) {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	n := fs.Int("n", 1, "number of parallel agents")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "error: prompt file required")
+		os.Exit(1)
+	}
+	promptFile := fs.Arg(0)
+
+	setNumAgents(*n)
+
+	log.SetFlags(log.Ltime)
+	log.Printf("daemon starting: max %d agent(s), tmux=%s", *n, tmuxSession)
+
+	stopCh := make(chan struct{})
+
+	go startSocketServer(stopCh)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		close(stopCh)
+	}()
+
+	runLoop(promptFile, stopCh)
+
+	shutdown()
+	os.Remove(socketPath())
+	os.Remove(pidPath())
+	log.Printf("daemon stopped")
+}
+
+// --- Daemon Logic ---
+
+func getNumAgents() int {
+	numAgentsMu.RLock()
+	defer numAgentsMu.RUnlock()
+	return numAgents
+}
+
+func setNumAgents(n int) {
+	numAgentsMu.Lock()
+	defer numAgentsMu.Unlock()
+	numAgents = n
+}
+
+func isDraining() bool {
+	drainingMu.RLock()
+	defer drainingMu.RUnlock()
+	return draining
+}
+
+func setDraining(v bool) {
+	drainingMu.Lock()
+	defer drainingMu.Unlock()
+	draining = v
+}
+
+func runLoop(promptFile string, stopCh <-chan struct{}) {
+	startTime = time.Now()
 	lastStatus := time.Now()
 	backoff := 1 * time.Second
 	const maxBackoff = 10 * time.Second
 
 	for {
-		// Check for shutdown signal (non-blocking)
 		select {
-		case <-sigCh:
-			shutdown(sigCh)
+		case <-stopCh:
 			return
 		default:
 		}
-		// Clean up finished agents
+
 		cleanupDeadAgents()
 
-		// Get ready tickets
 		readyTickets := getReadyTickets()
-
-		// Count running agents
 		running := countRunningAgents()
 		activeTickets := getActiveTickets()
+		maxAgents := getNumAgents()
+		draining := isDraining()
 
-		// Periodic status (every 10s)
+		// If draining and no agents running, we're done
+		if draining && running == 0 {
+			log.Printf("drain complete")
+			return
+		}
+
 		if time.Since(lastStatus) >= 10*time.Second {
+			status := ""
+			if draining {
+				status = "[draining] "
+			}
 			if len(activeTickets) > 0 {
-				log.Printf("running: %s | %d ready for pickup", 
-					strings.Join(activeTickets, ", "), len(readyTickets))
+				formatted := make([]string, len(activeTickets))
+				for i, id := range activeTickets {
+					formatted[i] = formatTicketWithTitle(id)
+				}
+				log.Printf("%srunning: %s | %d ready for pickup | max: %d",
+					status, strings.Join(formatted, ", "), len(readyTickets), maxAgents)
 			} else {
-				log.Printf("idle | %d ready for pickup", len(readyTickets))
+				log.Printf("%sidle | %d ready for pickup | max: %d", status, len(readyTickets), maxAgents)
 			}
 			lastStatus = time.Now()
 		}
 
-		if len(readyTickets) == 0 || running >= *numAgents {
+		// Don't start new agents if draining
+		if draining || len(readyTickets) == 0 || running >= maxAgents {
 			time.Sleep(backoff)
-			backoff = min(backoff*2, maxBackoff) // exponential backoff when idle
+			backoff = min(backoff*2, maxBackoff)
 			continue
 		}
 
@@ -124,8 +449,8 @@ func main() {
 			continue
 		}
 
-		log.Printf("agent started: %s", ticketID)
-		backoff = 1 * time.Second // reset backoff on activity
+		log.Printf("agent started: %s", formatTicketWithTitle(ticketID))
+		backoff = 1 * time.Second
 		time.Sleep(backoff)
 	}
 }
@@ -162,7 +487,6 @@ func countRunningAgents() int {
 }
 
 func getActiveTickets() []string {
-	// Get ticket IDs from tmux windows - tmux is source of truth
 	cmd := exec.Command("tmux", "list-windows", "-t", tmuxSession, "-F", "#{window_name}")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -182,7 +506,6 @@ func getActiveTickets() []string {
 func createWorktree(ticketID string) (string, error) {
 	wtName := "ticket-" + ticketID
 
-	// Check if worktree already exists
 	pathCmd := exec.Command("wt", "info", wtName, "--field", "path")
 	var pathOut bytes.Buffer
 	pathCmd.Stdout = &pathOut
@@ -190,7 +513,6 @@ func createWorktree(ticketID string) (string, error) {
 		return strings.TrimSpace(pathOut.String()), nil
 	}
 
-	// Create new worktree
 	cmd := exec.Command("wt", "create", "-n", wtName)
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
@@ -199,7 +521,6 @@ func createWorktree(ticketID string) (string, error) {
 		return "", fmt.Errorf("%v: %s", err, errOut.String())
 	}
 
-	// Get path of newly created worktree
 	pathCmd = exec.Command("wt", "info", wtName, "--field", "path")
 	pathOut.Reset()
 	pathCmd.Stdout = &pathOut
@@ -211,7 +532,6 @@ func createWorktree(ticketID string) (string, error) {
 }
 
 func startAgent(ticketID, wtPath, basePrompt string) error {
-	// Write prompt with $$ID replaced into .wt/ (gitignored)
 	prompt := strings.ReplaceAll(basePrompt, "$$ID", ticketID)
 	promptPath := wtPath + "/.wt/prompt.md"
 	if err := os.WriteFile(promptPath, []byte(prompt), 0644); err != nil {
@@ -223,10 +543,8 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 
 	var cmd *exec.Cmd
 	if tmuxSessionExists() {
-		// Add window to existing session
 		cmd = exec.Command("tmux", "new-window", "-t", tmuxSession, "-n", windowName, piCmd)
 	} else {
-		// Create session with this agent as first window
 		cmd = exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-n", windowName, piCmd)
 		log.Printf("created tmux session: %s", tmuxSession)
 	}
@@ -235,7 +553,6 @@ func startAgent(ticketID, wtPath, basePrompt string) error {
 		return err
 	}
 
-	// Set remain-on-exit so we can detect completion status
 	exec.Command("tmux", "set-option", "-t", tmuxSession, "remain-on-exit", "on").Run()
 	return nil
 }
@@ -268,23 +585,20 @@ func cleanupDeadAgents() {
 		ticketID := strings.TrimPrefix(windowName, "ticket-")
 		branchName := "ticket-" + ticketID
 
-		// Case 1: Pane is dead (pi exited)
 		if paneDead {
 			status := getTicketStatus(ticketID)
 			if status == "closed" {
-				log.Printf("agent done: %s", ticketID)
+				log.Printf("agent done: %s", formatTicketWithTitle(ticketID))
 			} else {
-				log.Printf("WARN: agent exited, ticket %s still %s", ticketID, status)
+				log.Printf("WARN: agent exited, ticket %s still %s", formatTicketWithTitle(ticketID), status)
 			}
 			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
 			continue
 		}
 
-		// Case 2: Ticket closed AND branch gone (worktree merged) → agent done, kill pi
 		status := getTicketStatus(ticketID)
 		if status == "closed" && !branchExists(branchName) {
-			log.Printf("agent done: %s", ticketID)
-			// SIGTERM the pi process
+			log.Printf("agent done: %s", formatTicketWithTitle(ticketID))
 			killPiInPane(pid)
 			exec.Command("tmux", "kill-window", "-t", tmuxSession+":"+windowName).Run()
 			continue
@@ -298,7 +612,6 @@ func branchExists(branchName string) bool {
 }
 
 func killPiInPane(shellPid string) {
-	// Find pi process as child of shell and kill it
 	pgrepCmd := exec.Command("pgrep", "-P", shellPid, "-x", "pi")
 	var out bytes.Buffer
 	pgrepCmd.Stdout = &out
@@ -311,26 +624,203 @@ func killPiInPane(shellPid string) {
 }
 
 func getTicketStatus(ticketID string) string {
+	status, _ := getTicketInfo(ticketID)
+	return status
+}
+
+func getTicketTitle(ticketID string) string {
+	_, title := getTicketInfo(ticketID)
+	return title
+}
+
+func getTicketInfo(ticketID string) (status, title string) {
 	cmd := exec.Command("tk", "show", ticketID)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return "unknown"
+		return "unknown", ""
 	}
 
-	// Parse YAML front matter for status
 	content := out.String()
+	inFrontmatter := false
 	for line := range strings.SplitSeq(content, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "status:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "status:"))
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			inFrontmatter = !inFrontmatter
+			continue
+		}
+		if inFrontmatter && strings.HasPrefix(trimmed, "status:") {
+			status = strings.TrimSpace(strings.TrimPrefix(trimmed, "status:"))
+		}
+		// Title is the first markdown heading after frontmatter
+		if !inFrontmatter && strings.HasPrefix(trimmed, "# ") {
+			title = strings.TrimPrefix(trimmed, "# ")
+			break
 		}
 	}
-	return "unknown"
+	if status == "" {
+		status = "unknown"
+	}
+	return status, title
 }
 
-func shutdown(sigCh <-chan os.Signal) {
+// formatTicketWithTitle returns "id (title)" or just "id" if no title
+func formatTicketWithTitle(ticketID string) string {
+	title := getTicketTitle(ticketID)
+	if title != "" {
+		// Truncate long titles
+		if len(title) > 40 {
+			title = title[:37] + "..."
+		}
+		return fmt.Sprintf("%s (%s)", ticketID, title)
+	}
+	return ticketID
+}
+
+func shutdown() {
 	log.Printf("shutting down...")
 	exec.Command("tmux", "kill-session", "-t", tmuxSession).Run()
 	log.Printf("stopped")
+}
+
+// --- Socket Server (daemon side) ---
+
+func startSocketServer(stopCh chan struct{}) {
+	sockPath := socketPath()
+	os.Remove(sockPath)
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		log.Printf("socket server error: %v", err)
+		return
+	}
+	defer listener.Close()
+
+	go func() {
+		<-stopCh
+		listener.Close()
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			select {
+			case <-stopCh:
+				return
+			default:
+				log.Printf("socket accept error: %v", err)
+				continue
+			}
+		}
+
+		go handleConnection(conn, stopCh)
+	}
+}
+
+func handleConnection(conn net.Conn, stopCh chan struct{}) {
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return
+	}
+
+	cmd := strings.TrimSpace(line)
+	var response string
+
+	switch {
+	case cmd == "ping":
+		response = "pong"
+
+	case cmd == "stop":
+		response = "ok"
+		conn.Write([]byte(response + "\n"))
+		close(stopCh)
+		return
+
+	case cmd == "status":
+		activeTickets := getActiveTickets()
+		readyTickets := getReadyTickets()
+		uptime := time.Since(startTime).Round(time.Second)
+		maxAgents := getNumAgents()
+		draining := isDraining()
+
+		status := ""
+		if draining {
+			status = "[draining] "
+		}
+		if len(activeTickets) > 0 {
+			formatted := make([]string, len(activeTickets))
+			for i, id := range activeTickets {
+				formatted[i] = formatTicketWithTitle(id)
+			}
+			response = fmt.Sprintf("%srunning: %s | %d ready | max: %d | uptime: %s",
+				status, strings.Join(formatted, ", "), len(readyTickets), maxAgents, uptime)
+		} else {
+			response = fmt.Sprintf("%sidle | %d ready | max: %d | uptime: %s", status, len(readyTickets), maxAgents, uptime)
+		}
+
+	case strings.HasPrefix(cmd, "scale "):
+		nStr := strings.TrimPrefix(cmd, "scale ")
+		n, err := strconv.Atoi(nStr)
+		if err != nil || n < 1 {
+			response = "error: invalid number"
+		} else {
+			old := getNumAgents()
+			setNumAgents(n)
+			log.Printf("scaled: %d -> %d agents", old, n)
+			response = fmt.Sprintf("scaled: %d -> %d", old, n)
+		}
+
+	case cmd == "drain":
+		setDraining(true)
+		running := countRunningAgents()
+		log.Printf("draining: waiting for %d agent(s) to finish", running)
+		response = fmt.Sprintf("draining: %d agent(s) running", running)
+
+	default:
+		response = "error: unknown command"
+	}
+
+	conn.Write([]byte(response + "\n"))
+}
+
+// --- Socket Client (CLI side) ---
+
+func sendCommand(cmd string) (string, error) {
+	conn, err := net.DialTimeout("unix", socketPath(), 2*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	_, err = conn.Write([]byte(cmd + "\n"))
+	if err != nil {
+		return "", err
+	}
+
+	reader := bufio.NewReader(conn)
+	response, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+
+	return strings.TrimSpace(response), nil
+}
+
+// --- Helpers ---
+
+func socketPath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("agentloop-%s.sock", tmuxSession))
+}
+
+func pidPath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("agentloop-%s.pid", tmuxSession))
+}
+
+func logPath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("agentloop-%s.log", tmuxSession))
 }
