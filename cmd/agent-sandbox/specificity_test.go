@@ -914,3 +914,73 @@ func Test_ResolveAndSort_Table_Driven(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================================
+// Tests: CLI overrides project config for same path
+// ============================================================================
+
+func Test_PickWinner_CLI_Rw_Beats_Project_Ro_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	// This is the bug scenario from ticket d5ghadr:
+	// - Project config: ro: ["examples/"]
+	// - CLI: --rw examples/
+	// - Expected: examples/ is writable (CLI wins)
+	candidates := []ResolvedPath{
+		{Original: "examples/", Resolved: "/home/user/project/examples", Access: PathAccessRo, Source: PathSourceProject},
+		{Original: "examples/", Resolved: "/home/user/project/examples", Access: PathAccessRw, Source: PathSourceCLI},
+	}
+
+	winner := pickWinner(candidates)
+
+	// CLI should win even though rw is less restrictive than ro
+	if winner.Source != PathSourceCLI {
+		t.Errorf("expected CLI to win, got source=%q", winner.Source)
+	}
+
+	if winner.Access != PathAccessRw {
+		t.Errorf("expected rw access (CLI override), got %q", winner.Access)
+	}
+}
+
+func Test_PickWinner_Global_Rw_Beats_Preset_Exclude_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	// Global config should override preset even with less restrictive access
+	candidates := []ResolvedPath{
+		{Original: "~/.cache", Resolved: "/home/user/.cache", Access: PathAccessExclude, Source: PathSourcePreset},
+		{Original: "~/.cache", Resolved: "/home/user/.cache", Access: PathAccessRw, Source: PathSourceGlobal},
+	}
+
+	winner := pickWinner(candidates)
+
+	// Global should win
+	if winner.Source != PathSourceGlobal {
+		t.Errorf("expected global to win, got source=%q", winner.Source)
+	}
+
+	if winner.Access != PathAccessRw {
+		t.Errorf("expected rw access, got %q", winner.Access)
+	}
+}
+
+func Test_PickWinner_Project_Beats_Global_With_Less_Restrictive_Access(t *testing.T) {
+	t.Parallel()
+
+	// Project config should override global config regardless of access level
+	candidates := []ResolvedPath{
+		{Original: "~/.cache", Resolved: "/home/user/.cache", Access: PathAccessExclude, Source: PathSourceGlobal},
+		{Original: "~/.cache", Resolved: "/home/user/.cache", Access: PathAccessRw, Source: PathSourceProject},
+	}
+
+	winner := pickWinner(candidates)
+
+	// Project should win
+	if winner.Source != PathSourceProject {
+		t.Errorf("expected project to win, got source=%q", winner.Source)
+	}
+
+	if winner.Access != PathAccessRw {
+		t.Errorf("expected rw access, got %q", winner.Access)
+	}
+}

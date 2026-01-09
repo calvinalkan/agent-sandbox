@@ -866,3 +866,144 @@ func Test_Sandbox_ConfigFile_ExcludePath(t *testing.T) {
 		t.Errorf("excluded file should not be visible via config: %s", stdout)
 	}
 }
+
+// ============================================================================
+// E2E tests for CLI flag overriding project config (ticket d5ghadr)
+// ============================================================================
+
+func Test_Sandbox_CLI_Rw_Overrides_Project_Config_Ro_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a subdirectory in the test project
+	examplesDir := filepath.Join(c.Dir, "examples")
+
+	err := os.MkdirAll(examplesDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create examples dir: %v", err)
+	}
+
+	// Write project config that marks examples/ as read-only
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["examples/"]
+		}
+	}`)
+
+	// First verify that without CLI override, examples/ is read-only
+	newFile := filepath.Join(examplesDir, "newfile.txt")
+	_, stderr, code := c.Run("touch", newFile)
+
+	if code == 0 {
+		t.Fatal("expected write to fail when examples/ is ro from project config")
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+
+	// Now use CLI --rw to override the project config
+	_, _, code = c.Run("--rw", "examples/", "touch", newFile)
+
+	if code != 0 {
+		t.Errorf("expected write to succeed with --rw override, got exit code %d", code)
+	}
+
+	// Verify the file was actually created on the host
+	_, statErr := os.Stat(newFile)
+	if statErr != nil {
+		t.Errorf("file should have been created with --rw override: %v", statErr)
+	}
+}
+
+func Test_Sandbox_CLI_Ro_Overrides_Project_Config_Rw_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a subdirectory in the test project
+	outputDir := filepath.Join(c.Dir, "output")
+
+	err := os.MkdirAll(outputDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create output dir: %v", err)
+	}
+
+	// Write project config that marks output/ as writable
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"rw": ["output/"]
+		}
+	}`)
+
+	// Use CLI --ro to override the project config and make it read-only
+	newFile := filepath.Join(outputDir, "newfile.txt")
+	_, stderr, code := c.Run("--ro", "output/", "touch", newFile)
+
+	if code == 0 {
+		t.Fatal("expected write to fail with --ro CLI override")
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+
+	// Verify the file was NOT created on the host
+	_, statErr := os.Stat(newFile)
+	if statErr == nil {
+		t.Error("file should NOT have been created with --ro override")
+	}
+}
+
+func Test_Sandbox_CLI_Exclude_Overrides_Project_Config_Ro_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Create a subdirectory in the test project with a file
+	secretsDir := filepath.Join(c.Dir, "secrets")
+
+	err := os.MkdirAll(secretsDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create secrets dir: %v", err)
+	}
+
+	err = os.WriteFile(filepath.Join(secretsDir, "api-key.txt"), []byte("secret123"), 0o644)
+	if err != nil {
+		t.Fatalf("failed to write secret file: %v", err)
+	}
+
+	// Write project config that marks secrets/ as read-only
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["secrets/"]
+		}
+	}`)
+
+	// First verify that without CLI override, secrets/ is readable
+	stdout, stderr, code := c.Run("cat", filepath.Join(secretsDir, "api-key.txt"))
+
+	if code != 0 {
+		t.Fatalf("expected read to succeed when secrets/ is ro, got: %s", stderr)
+	}
+
+	if !strings.Contains(stdout, "secret123") {
+		t.Errorf("expected to read secret content, got: %s", stdout)
+	}
+
+	// Now use CLI --exclude to override the project config and hide it completely
+	stdout, _, _ = c.Run("--exclude", "secrets/", "ls", secretsDir)
+
+	// ls should still succeed but show nothing (or show error about non-existent directory)
+	// The key is that the file should not be visible
+	if strings.Contains(stdout, "api-key.txt") {
+		t.Error("secret file should NOT be visible with --exclude CLI override")
+	}
+}

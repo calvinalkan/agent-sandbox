@@ -98,8 +98,8 @@ func deduplicatePaths(entries []ResolvedPath) []ResolvedPath {
 //
 // Rules (from SPEC):
 //  1. Exact path beats glob - an explicit path wins over a glob-expanded path
-//  2. More restrictive access wins - exclude > ro > rw
-//  3. Later config layer wins - CLI > project > global > preset
+//  2. Later config layer wins - CLI > project > global > preset
+//  3. More restrictive access wins (tie-breaker for same layer) - exclude > ro > rw
 func pickWinner(candidates []ResolvedPath) ResolvedPath {
 	if len(candidates) == 1 {
 		return candidates[0]
@@ -119,19 +119,19 @@ func pickWinner(candidates []ResolvedPath) ResolvedPath {
 			return 1 // right is exact (non-glob), wins
 		}
 
-		// 2. More restrictive access wins (exclude > ro > rw)
-		leftPrio := accessPriority(left.Access)
-		rightPrio := accessPriority(right.Access)
-
-		if leftPrio != rightPrio {
-			return rightPrio - leftPrio // higher priority first
-		}
-
-		// 3. Later config layer wins (CLI > project > global > preset)
+		// 2. Later config layer wins (CLI > project > global > preset)
 		leftLayer := sourcePriority(left.Source)
 		rightLayer := sourcePriority(right.Source)
 
-		return rightLayer - leftLayer // higher layer first
+		if leftLayer != rightLayer {
+			return rightLayer - leftLayer // higher layer first
+		}
+
+		// 3. More restrictive access wins (tie-breaker for same layer)
+		leftPrio := accessPriority(left.Access)
+		rightPrio := accessPriority(right.Access)
+
+		return rightPrio - leftPrio // higher priority first
 	})
 
 	return candidates[0]

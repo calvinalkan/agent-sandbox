@@ -1,7 +1,8 @@
 ---
 schema_version: 1
 id: d5ghadr
-status: open
+status: closed
+closed: 2026-01-09T15:17:02Z
 blocked-by: []
 created: 2026-01-09T14:48:23Z
 type: bug
