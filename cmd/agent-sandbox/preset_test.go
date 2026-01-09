@@ -22,6 +22,7 @@ func Test_PresetRegistry_Contains_All_Expected_Presets(t *testing.T) {
 		"@base",
 		"@caches",
 		"@git",
+		"@git-strict",
 		"@lint/ts",
 		"@lint/go",
 		"@lint/python",
@@ -1244,6 +1245,666 @@ func Test_GitPreset_Integration_Real_Git_Worktree(t *testing.T) {
 
 	if !sliceContains(paths.Ro, expectedMainConfig) {
 		t.Errorf("@git should include main repo config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+// ============================================================================
+// @git-strict preset tests
+// ============================================================================
+
+func Test_GitStrictPreset_Returns_Hooks_And_Config_For_Normal_Repo(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp directory with a .git directory
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	expectedHooks := filepath.Join(gitDir, "hooks")
+	expectedConfig := filepath.Join(gitDir, "config")
+
+	if !sliceContains(paths.Ro, expectedHooks) {
+		t.Errorf("@git-strict should include .git/hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedConfig) {
+		t.Errorf("@git-strict should include .git/config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitStrictPreset_Returns_OtherBranchRefs_As_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create main branch (current) and other-branch
+	err = os.WriteFile(filepath.Join(gitDir, "refs", "heads", "main"), []byte("abc123\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "refs", "heads", "other-branch"), []byte("def456\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	// other-branch should be in ro paths
+	expectedOtherBranch := filepath.Join(gitDir, "refs", "heads", "other-branch")
+
+	if !sliceContains(paths.Ro, expectedOtherBranch) {
+		t.Errorf("@git-strict should include other-branch in ro paths, got: %v", paths.Ro)
+	}
+
+	// main (current branch) should NOT be in ro paths
+	expectedMainBranch := filepath.Join(gitDir, "refs", "heads", "main")
+
+	if sliceContains(paths.Ro, expectedMainBranch) {
+		t.Errorf("@git-strict should NOT include current branch (main) in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitStrictPreset_Returns_RefsTags_As_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	expectedRefsTags := filepath.Join(gitDir, "refs", "tags")
+
+	if !sliceContains(paths.Ro, expectedRefsTags) {
+		t.Errorf("@git-strict should include refs/tags in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitStrictPreset_Excludes_CurrentBranch_From_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create main branch and feature branch ref files
+	err = os.WriteFile(filepath.Join(gitDir, "refs", "heads", "main"), []byte("abc123\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "refs", "heads", "feature"), []byte("def456\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	// Current branch (main) should NOT be in ro paths
+	currentBranchRef := filepath.Join(gitDir, "refs", "heads", "main")
+
+	if sliceContains(paths.Ro, currentBranchRef) {
+		t.Errorf("@git-strict should NOT include current branch ref in ro paths, got: %v", paths.Ro)
+	}
+
+	// Feature branch should be in ro paths
+	featureBranchRef := filepath.Join(gitDir, "refs", "heads", "feature")
+
+	if !sliceContains(paths.Ro, featureBranchRef) {
+		t.Errorf("@git-strict should include feature branch ref in ro paths, got: %v", paths.Ro)
+	}
+
+	// No rw paths should be set (current branch is just excluded from ro, not added to rw)
+	if len(paths.Rw) != 0 {
+		t.Errorf("@git-strict should have no rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_GitStrictPreset_Returns_Empty_For_Non_Git_Directory(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	if len(paths.Ro) != 0 {
+		t.Errorf("@git-strict should return empty ro paths for non-git directory, got: %v", paths.Ro)
+	}
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@git-strict should return empty rw paths for non-git directory, got: %v", paths.Rw)
+	}
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@git-strict should return empty exclude paths for non-git directory, got: %v", paths.Exclude)
+	}
+}
+
+func Test_GitStrictPreset_Protects_All_Branches_For_Detached_HEAD(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a branch ref file
+	err = os.WriteFile(filepath.Join(gitDir, "refs", "heads", "main"), []byte("abc123\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Detached HEAD points to a commit hash, not a branch
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("abc123def456789\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	// Should have refs/tags directory as ro
+	expectedRefsTags := filepath.Join(gitDir, "refs", "tags")
+
+	if !sliceContains(paths.Ro, expectedRefsTags) {
+		t.Errorf("@git-strict should include refs/tags in ro paths, got: %v", paths.Ro)
+	}
+
+	// All branches should be protected when HEAD is detached (no current branch)
+	expectedMain := filepath.Join(gitDir, "refs", "heads", "main")
+
+	if !sliceContains(paths.Ro, expectedMain) {
+		t.Errorf("@git-strict should include all branches in ro paths for detached HEAD, got: %v", paths.Ro)
+	}
+
+	// Should NOT have any rw paths (no current branch)
+	if len(paths.Rw) != 0 {
+		t.Errorf("@git-strict should have no rw paths for detached HEAD, got: %v", paths.Rw)
+	}
+}
+
+func Test_GitStrictPreset_Worktree_Returns_All_Paths(t *testing.T) {
+	t.Parallel()
+
+	// Create main repo structure
+	tmpDir := t.TempDir()
+	mainRepoDir := filepath.Join(tmpDir, "main-repo")
+	mainGitDir := filepath.Join(mainRepoDir, ".git")
+
+	// Create main repo .git directory structure
+	err := os.MkdirAll(filepath.Join(mainGitDir, "hooks"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(mainGitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(mainGitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeGitDir := filepath.Join(mainGitDir, "worktrees", "feature-branch")
+
+	err = os.MkdirAll(worktreeGitDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(mainGitDir, "config"), []byte("[core]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "config"), []byte("[worktree]\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// commondir points back to main .git directory
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../.."), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Worktree HEAD points to feature branch
+	err = os.WriteFile(filepath.Join(worktreeGitDir, "HEAD"), []byte("ref: refs/heads/feature\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktree directory with .git file
+	worktreeDir := filepath.Join(tmpDir, "worktree")
+
+	err = os.MkdirAll(worktreeDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitFile := filepath.Join(worktreeDir, ".git")
+
+	err = os.WriteFile(gitFile, []byte("gitdir: "+worktreeGitDir+"\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	// Create another branch in main repo to test protection
+	err = os.WriteFile(filepath.Join(mainGitDir, "refs", "heads", "other-branch"), []byte("ghi789\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	// Should have hooks and config for both worktree and main repo
+	expectedWorktreeHooks := filepath.Join(worktreeGitDir, "hooks")
+	expectedWorktreeConfig := filepath.Join(worktreeGitDir, "config")
+	expectedMainHooks := filepath.Join(mainGitDir, "hooks")
+	expectedMainConfig := filepath.Join(mainGitDir, "config")
+
+	if !sliceContains(paths.Ro, expectedWorktreeHooks) {
+		t.Errorf("@git-strict should include worktree hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedWorktreeConfig) {
+		t.Errorf("@git-strict should include worktree config in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedMainHooks) {
+		t.Errorf("@git-strict should include main hooks in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, expectedMainConfig) {
+		t.Errorf("@git-strict should include main config in ro paths, got: %v", paths.Ro)
+	}
+
+	// Should have refs/tags from main repo
+	expectedRefsTags := filepath.Join(mainGitDir, "refs", "tags")
+
+	if !sliceContains(paths.Ro, expectedRefsTags) {
+		t.Errorf("@git-strict should include main repo refs/tags in ro paths, got: %v", paths.Ro)
+	}
+
+	// other-branch should be protected (in ro paths)
+	expectedOtherBranch := filepath.Join(mainGitDir, "refs", "heads", "other-branch")
+
+	if !sliceContains(paths.Ro, expectedOtherBranch) {
+		t.Errorf("@git-strict should include other-branch in ro paths, got: %v", paths.Ro)
+	}
+
+	// Current branch (feature) should NOT be in ro paths
+	currentBranchRef := filepath.Join(mainGitDir, "refs", "heads", "feature")
+
+	if sliceContains(paths.Ro, currentBranchRef) {
+		t.Errorf("@git-strict should NOT include current branch (feature) in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GitStrictPreset_Ignores_Disabled_Map(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	// @git-strict is a simple preset, so disabled should have no effect
+	disabled := map[string]bool{
+		"@git-strict": true,
+	}
+
+	paths := resolveGitStrictPreset(ctx, disabled)
+
+	// Should still return paths
+	if len(paths.Ro) == 0 {
+		t.Error("@git-strict should return ro paths even with disabled map")
+	}
+}
+
+func Test_GitStrictPreset_Returns_No_Exclude_Paths(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	if len(paths.Exclude) != 0 {
+		t.Errorf("@git-strict should not return any exclude paths, got: %v", paths.Exclude)
+	}
+}
+
+func Test_GitStrictPreset_Uses_Absolute_Paths(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitDir := filepath.Join(tmpDir, ".git")
+
+	err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.MkdirAll(filepath.Join(gitDir, "refs", "tags"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "refs", "heads", "main"), []byte("abc123\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: tmpDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+
+	for _, p := range paths.Rw {
+		if p == "" || p[0] != '/' {
+			t.Errorf("rw path should be absolute: %q", p)
+		}
+	}
+}
+
+// ============================================================================
+// @git-strict preset integration tests with real git
+// ============================================================================
+
+func Test_GitStrictPreset_Integration_Real_Git_Init(t *testing.T) {
+	t.Parallel()
+
+	repo := NewGitRepo(t)
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: repo.Dir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	// Should have:
+	// - 3 ro paths: hooks, config, refs/tags (no other branches to protect)
+	// - 0 rw paths (current branch is just excluded, not added to rw)
+	// Note: Only one branch exists (master/main), and it's the current branch,
+	// so there are no other branches to protect.
+	if len(paths.Ro) != 3 {
+		t.Errorf("@git-strict for real git repo should have 3 ro paths, got %d: %v", len(paths.Ro), paths.Ro)
+	}
+
+	if len(paths.Rw) != 0 {
+		t.Errorf("@git-strict should have 0 rw paths, got %d: %v", len(paths.Rw), paths.Rw)
+	}
+}
+
+func Test_GitStrictPreset_Integration_Real_Git_Worktree(t *testing.T) {
+	t.Parallel()
+
+	// Create a real git repository with an initial commit
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("Initial commit")
+
+	// Create a worktree (this creates a new branch)
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	repo.AddWorktree(worktreeDir, "feature-branch")
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: worktreeDir,
+	}
+
+	paths := resolveGitStrictPreset(ctx, nil)
+
+	// Should have 6 ro paths:
+	// - worktree hooks, worktree config
+	// - main hooks, main config
+	// - refs/tags
+	// - master/main branch (other branch, since feature-branch is current)
+	if len(paths.Ro) != 6 {
+		t.Errorf("@git-strict for real worktree should have 6 ro paths, got %d: %v", len(paths.Ro), paths.Ro)
+	}
+
+	// Should have 0 rw paths (current branch is just excluded)
+	if len(paths.Rw) != 0 {
+		t.Errorf("@git-strict should have 0 rw paths, got %d: %v", len(paths.Rw), paths.Rw)
+	}
+
+	// Verify the feature-branch is NOT in ro paths (it's the current branch)
+	mainGitDir := filepath.Join(repo.Dir, ".git")
+	currentBranchRef := filepath.Join(mainGitDir, "refs", "heads", "feature-branch")
+
+	if sliceContains(paths.Ro, currentBranchRef) {
+		t.Errorf("@git-strict should NOT include current branch (feature-branch) in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_GetCurrentBranch_Returns_BranchName_From_Symbolic_Ref(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(tmpDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	branch := getCurrentBranch(tmpDir)
+	if branch != "main" {
+		t.Errorf("expected 'main', got %q", branch)
+	}
+}
+
+func Test_GetCurrentBranch_Returns_Empty_For_Detached_HEAD(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Detached HEAD contains a commit hash
+	err := os.WriteFile(filepath.Join(tmpDir, "HEAD"), []byte("abc123def456789012345678901234567890abcd\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	branch := getCurrentBranch(tmpDir)
+	if branch != "" {
+		t.Errorf("expected empty string for detached HEAD, got %q", branch)
+	}
+}
+
+func Test_GetCurrentBranch_Returns_Empty_When_HEAD_Not_Found(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	// Don't create HEAD file
+
+	branch := getCurrentBranch(tmpDir)
+	if branch != "" {
+		t.Errorf("expected empty string when HEAD not found, got %q", branch)
+	}
+}
+
+func Test_GetCurrentBranch_Handles_Branch_With_Slashes(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Branch name with slashes (feature/my-feature)
+	err := os.WriteFile(filepath.Join(tmpDir, "HEAD"), []byte("ref: refs/heads/feature/my-feature\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	branch := getCurrentBranch(tmpDir)
+	if branch != "feature/my-feature" {
+		t.Errorf("expected 'feature/my-feature', got %q", branch)
 	}
 }
 

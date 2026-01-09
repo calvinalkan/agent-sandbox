@@ -63,6 +63,12 @@ var PresetRegistry = map[string]*Preset{
 		Composite:   false,
 		Resolve:     resolveGitPreset,
 	},
+	"@git-strict": {
+		Name:        "@git-strict",
+		Description: "All @git protections plus branch lockdown: only current branch writable, all other branches and tags read-only",
+		Composite:   false,
+		Resolve:     resolveGitStrictPreset,
+	},
 	"@lint/ts": {
 		Name:        "@lint/ts",
 		Description: "TypeScript/JavaScript lint configs protected (biome, eslint, prettier, tsconfig)",
@@ -275,6 +281,222 @@ func resolveGitPaths(workDir string) (GitPaths, error) {
 	}
 
 	return result, nil
+}
+
+// GitStrictPaths extends GitPaths with refs information for @git-strict preset.
+type GitStrictPaths struct {
+	GitPaths
+
+	// OtherBranchRefs is a list of paths to other branch ref files (not current branch)
+	// These are made read-only to prevent modification of other branches.
+	OtherBranchRefs []string
+	// RefsTags is the path to refs/tags directory (all tags)
+	// Made read-only to prevent tag creation/modification/deletion.
+	RefsTags string
+}
+
+// resolveGitStrictPreset returns paths for the @git-strict preset.
+// It provides all @git protections plus branch lockdown:
+//   - All @git protections (hooks, config)
+//   - Individual other branch refs read-only (protects existing branches)
+//   - refs/tags/ directory read-only (cannot create/modify/delete tags)
+//
+// The current branch ref is NOT made read-only so commits can work.
+// Git needs write access to refs/heads/ directory for .lock files.
+//
+// For worktrees, it protects the main repo's refs as well.
+//
+// Note: @git-strict ignores the disabled parameter (it's a simple preset).
+func resolveGitStrictPreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	strictPaths, err := resolveGitStrictPaths(ctx.WorkDir)
+	if err != nil {
+		// Error reading git files - return empty paths
+		return PresetPaths{}
+	}
+
+	paths := PresetPaths{}
+
+	// Add all @git paths (hooks and config protection)
+	if strictPaths.Hooks != "" {
+		paths.Ro = append(paths.Ro, strictPaths.Hooks)
+	}
+
+	if strictPaths.Config != "" {
+		paths.Ro = append(paths.Ro, strictPaths.Config)
+	}
+
+	if strictPaths.MainHooks != "" {
+		paths.Ro = append(paths.Ro, strictPaths.MainHooks)
+	}
+
+	if strictPaths.MainConfig != "" {
+		paths.Ro = append(paths.Ro, strictPaths.MainConfig)
+	}
+
+	// Add individual other branch refs as read-only
+	// This protects existing branches while allowing commits on current branch
+	paths.Ro = append(paths.Ro, strictPaths.OtherBranchRefs...)
+
+	// Add refs/tags as read-only (protects all tags and prevents creation)
+	if strictPaths.RefsTags != "" {
+		paths.Ro = append(paths.Ro, strictPaths.RefsTags)
+	}
+
+	return paths
+}
+
+// resolveGitStrictPaths detects git repository type and returns paths for @git-strict.
+// This includes all @git paths plus individual branch refs and refs/tags directory.
+// Returns an empty GitStrictPaths if workDir is not a git repository.
+// Returns error if .git file format is invalid.
+func resolveGitStrictPaths(workDir string) (GitStrictPaths, error) {
+	gitPath := filepath.Join(workDir, ".git")
+
+	info, err := os.Lstat(gitPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// No .git, not a git repo - return empty paths (not an error)
+		return GitStrictPaths{}, nil
+	}
+
+	if err != nil {
+		return GitStrictPaths{}, fmt.Errorf("checking .git path: %w", err)
+	}
+
+	var result GitStrictPaths
+
+	if info.IsDir() {
+		// Normal repo - .git is a directory
+		result.Hooks = filepath.Join(gitPath, "hooks")
+		result.Config = filepath.Join(gitPath, "config")
+		result.RefsTags = filepath.Join(gitPath, "refs", "tags")
+
+		// Get current branch from HEAD
+		currentBranch := getCurrentBranch(gitPath)
+
+		// Enumerate other branch refs (excluding current branch)
+		refsHeadsDir := filepath.Join(gitPath, "refs", "heads")
+		result.OtherBranchRefs = enumerateBranchRefs(refsHeadsDir, currentBranch)
+
+		return result, nil
+	}
+
+	// Worktree: .git is a file containing "gitdir: /path/to/.git/worktrees/name"
+	content, err := os.ReadFile(gitPath)
+	if err != nil {
+		return GitStrictPaths{}, fmt.Errorf("reading .git file: %w", err)
+	}
+
+	// Parse "gitdir: /path/to/.git/worktrees/name"
+	gitdirLine := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(gitdirLine, "gitdir: ") {
+		return GitStrictPaths{}, fmt.Errorf("%w: expected 'gitdir: <path>', got %q", ErrInvalidGitFile, gitdirLine)
+	}
+
+	worktreeGitDir := strings.TrimPrefix(gitdirLine, "gitdir: ")
+
+	// Handle relative paths in gitdir (resolve relative to workDir)
+	if !filepath.IsAbs(worktreeGitDir) {
+		worktreeGitDir = filepath.Join(workDir, worktreeGitDir)
+	}
+
+	worktreeGitDir, err = filepath.Abs(worktreeGitDir)
+	if err != nil {
+		return GitStrictPaths{}, fmt.Errorf("resolving worktree git dir: %w", err)
+	}
+
+	// Protect worktree-specific hooks/config
+	result.Hooks = filepath.Join(worktreeGitDir, "hooks")
+	result.Config = filepath.Join(worktreeGitDir, "config")
+
+	// Find commondir to get main repo's .git
+	commondirPath := filepath.Join(worktreeGitDir, "commondir")
+
+	commondirContent, err := os.ReadFile(commondirPath)
+	if err == nil {
+		commondir := strings.TrimSpace(string(commondirContent))
+		mainGitDir := filepath.Join(worktreeGitDir, commondir)
+
+		mainGitDir, err = filepath.Abs(mainGitDir)
+		if err == nil {
+			// Also protect main repo's hooks/config
+			result.MainHooks = filepath.Join(mainGitDir, "hooks")
+			result.MainConfig = filepath.Join(mainGitDir, "config")
+
+			// refs/tags directory in main repo
+			result.RefsTags = filepath.Join(mainGitDir, "refs", "tags")
+
+			// Get current branch from worktree's HEAD (not main repo's HEAD)
+			// Worktree HEAD is at .git/worktrees/<name>/HEAD
+			currentBranch := getCurrentBranch(worktreeGitDir)
+
+			// Enumerate other branch refs (excluding current branch)
+			// refs are stored in the main repo's .git directory
+			refsHeadsDir := filepath.Join(mainGitDir, "refs", "heads")
+			result.OtherBranchRefs = enumerateBranchRefs(refsHeadsDir, currentBranch)
+		}
+	}
+
+	return result, nil
+}
+
+// enumerateBranchRefs walks the refs/heads directory and returns paths to all branch refs
+// except the current branch. Handles nested branch names like "feature/my-feature".
+func enumerateBranchRefs(refsHeadsDir string, currentBranch string) []string {
+	var refs []string
+
+	// Walk the refs/heads directory recursively to handle nested branch names
+	_ = filepath.WalkDir(refsHeadsDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return filepath.SkipDir // Skip directories with errors
+		}
+
+		if d.IsDir() {
+			return nil // Continue into directories
+		}
+
+		// Get branch name relative to refs/heads
+		// filepath.Rel only errors if refsHeadsDir is not a valid base path for path,
+		// which shouldn't happen since we're walking within refsHeadsDir.
+		// If it somehow does error, we just skip this file.
+		relPath, _ := filepath.Rel(refsHeadsDir, path)
+		if relPath == "" {
+			return nil
+		}
+
+		// Skip current branch
+		if relPath == currentBranch {
+			return nil
+		}
+
+		refs = append(refs, path)
+
+		return nil
+	})
+
+	return refs
+}
+
+// getCurrentBranch reads HEAD and returns the current branch name.
+// Returns empty string if HEAD is detached (points to a commit hash),
+// unborn (repository has no commits), or cannot be read.
+func getCurrentBranch(gitDir string) string {
+	headPath := filepath.Join(gitDir, "HEAD")
+
+	content, err := os.ReadFile(headPath)
+	if err != nil {
+		return ""
+	}
+
+	headContent := strings.TrimSpace(string(content))
+
+	// Check if HEAD is a symbolic ref (e.g., "ref: refs/heads/main")
+	if !strings.HasPrefix(headContent, "ref: refs/heads/") {
+		// Detached HEAD (contains a commit hash) or invalid format
+		return ""
+	}
+
+	// Extract branch name from "ref: refs/heads/branch-name"
+	return strings.TrimPrefix(headContent, "ref: refs/heads/")
 }
 
 // resolveLintTSPreset returns paths for the @lint/ts preset.
