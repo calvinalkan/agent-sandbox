@@ -84,9 +84,46 @@ var PresetRegistry = map[string]*Preset{
 }
 
 // resolveBasePreset returns paths for the @base preset.
-// Stub implementation - expansion logic will be added in a future ticket.
-func resolveBasePreset(_ PresetContext, _ map[string]bool) PresetPaths {
-	return PresetPaths{}
+// It provides the core sandbox configuration:
+//   - WorkDir and /tmp are writable (so agents can work)
+//   - Home directory is read-only (protects existing files)
+//   - Config files are read-only (prevents config tampering)
+//   - Secrets (~/.ssh, ~/.gnupg, ~/.aws) are excluded
+//
+// Note: @base ignores the disabled parameter (it's a simple preset).
+func resolveBasePreset(ctx PresetContext, _ map[string]bool) PresetPaths {
+	paths := PresetPaths{}
+
+	// Read-Write: WorkDir and /tmp
+	// These must be writable for agents to do useful work
+	paths.Rw = []string{
+		ctx.WorkDir,
+		"/tmp",
+	}
+
+	// Read-Only: Home directory (protects existing files)
+	paths.Ro = []string{ctx.HomeDir}
+
+	// Read-Only: Project config files in WorkDir (if they could exist)
+	// We always add these paths - they'll be skipped if they don't exist
+	// during path resolution. This ensures config files are protected.
+	paths.Ro = append(paths.Ro,
+		ctx.WorkDir+"/.agent-sandbox.json",
+		ctx.WorkDir+"/.agent-sandbox.jsonc",
+	)
+
+	// Read-Only: Any config files that were actually loaded
+	// This includes global config and explicit --config file
+	paths.Ro = append(paths.Ro, ctx.LoadedConfigPaths...)
+
+	// Exclude: Secrets - these should not be readable at all
+	paths.Exclude = []string{
+		ctx.HomeDir + "/.ssh",
+		ctx.HomeDir + "/.gnupg",
+		ctx.HomeDir + "/.aws",
+	}
+
+	return paths
 }
 
 // resolveCachesPreset returns paths for the @caches preset.

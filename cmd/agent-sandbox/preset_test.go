@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -160,5 +161,277 @@ func Test_Preset_Resolve_Functions_Accept_Context_And_Disabled_Map(t *testing.T)
 		_ = result
 
 		t.Logf("preset %q Resolve function called successfully", name)
+	}
+}
+
+// sliceContains checks if a string slice contains a specific value.
+func sliceContains(slice []string, value string) bool {
+	return slices.Contains(slice, value)
+}
+
+// ============================================================================
+// @base preset tests
+// ============================================================================
+
+func Test_BasePreset_Returns_WorkDir_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/home/user/project") {
+		t.Errorf("@base should include WorkDir in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_BasePreset_Returns_Tmp_As_Writable(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Rw, "/tmp") {
+		t.Errorf("@base should include /tmp in rw paths, got: %v", paths.Rw)
+	}
+}
+
+func Test_BasePreset_Returns_HomeDir_As_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user") {
+		t.Errorf("@base should include HomeDir in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_BasePreset_Returns_Project_Config_Files_As_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/project/.agent-sandbox.json") {
+		t.Errorf("@base should include .agent-sandbox.json in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/home/user/project/.agent-sandbox.jsonc") {
+		t.Errorf("@base should include .agent-sandbox.jsonc in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_BasePreset_Returns_LoadedConfigPaths_As_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+		LoadedConfigPaths: []string{
+			"/home/user/.config/agent-sandbox/config.json",
+			"/some/custom/config.jsonc",
+		},
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Ro, "/home/user/.config/agent-sandbox/config.json") {
+		t.Errorf("@base should include global config in ro paths, got: %v", paths.Ro)
+	}
+
+	if !sliceContains(paths.Ro, "/some/custom/config.jsonc") {
+		t.Errorf("@base should include custom config in ro paths, got: %v", paths.Ro)
+	}
+}
+
+func Test_BasePreset_Excludes_SSH_Directory(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Exclude, "/home/user/.ssh") {
+		t.Errorf("@base should exclude ~/.ssh, got: %v", paths.Exclude)
+	}
+}
+
+func Test_BasePreset_Excludes_GnuPG_Directory(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Exclude, "/home/user/.gnupg") {
+		t.Errorf("@base should exclude ~/.gnupg, got: %v", paths.Exclude)
+	}
+}
+
+func Test_BasePreset_Excludes_AWS_Directory(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	if !sliceContains(paths.Exclude, "/home/user/.aws") {
+		t.Errorf("@base should exclude ~/.aws, got: %v", paths.Exclude)
+	}
+}
+
+func Test_BasePreset_Works_When_WorkDir_Is_Outside_Home(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/opt/project",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	// WorkDir should still be writable
+	if !sliceContains(paths.Rw, "/opt/project") {
+		t.Errorf("@base should include WorkDir /opt/project in rw paths, got: %v", paths.Rw)
+	}
+
+	// Home should still be read-only
+	if !sliceContains(paths.Ro, "/home/user") {
+		t.Errorf("@base should include HomeDir in ro paths, got: %v", paths.Ro)
+	}
+
+	// Project config paths should use the actual WorkDir
+	if !sliceContains(paths.Ro, "/opt/project/.agent-sandbox.json") {
+		t.Errorf("@base should include .agent-sandbox.json in WorkDir, got: %v", paths.Ro)
+	}
+}
+
+func Test_BasePreset_Uses_Absolute_Paths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir:           "/home/user",
+		WorkDir:           "/home/user/project",
+		LoadedConfigPaths: []string{"/global/config.json"},
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	// All paths should be absolute (start with /)
+	for _, p := range paths.Rw {
+		if p == "" || p[0] != '/' {
+			t.Errorf("rw path should be absolute: %q", p)
+		}
+	}
+
+	for _, p := range paths.Ro {
+		if p == "" || p[0] != '/' {
+			t.Errorf("ro path should be absolute: %q", p)
+		}
+	}
+
+	for _, p := range paths.Exclude {
+		if p == "" || p[0] != '/' {
+			t.Errorf("exclude path should be absolute: %q", p)
+		}
+	}
+}
+
+func Test_BasePreset_Ignores_Disabled_Map(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/user",
+		WorkDir: "/home/user/project",
+	}
+
+	// @base is a simple preset, so disabled should have no effect
+	disabled := map[string]bool{
+		"@base": true, // Even if @base is in disabled, it still resolves
+	}
+
+	paths := resolveBasePreset(ctx, disabled)
+
+	// Should still return all paths
+	if len(paths.Rw) == 0 {
+		t.Error("@base should return rw paths even with disabled map")
+	}
+
+	if len(paths.Ro) == 0 {
+		t.Error("@base should return ro paths even with disabled map")
+	}
+
+	if len(paths.Exclude) == 0 {
+		t.Error("@base should return exclude paths even with disabled map")
+	}
+}
+
+func Test_BasePreset_Handles_Empty_LoadedConfigPaths(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir:           "/home/user",
+		WorkDir:           "/home/user/project",
+		LoadedConfigPaths: nil, // No configs loaded
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	// Should still have at least home + project config file paths
+	if len(paths.Ro) < 3 {
+		t.Errorf("@base should have at least 3 ro paths (home + 2 project configs), got: %v", paths.Ro)
+	}
+}
+
+func Test_BasePreset_Returns_All_Three_Secret_Directories(t *testing.T) {
+	t.Parallel()
+
+	ctx := PresetContext{
+		HomeDir: "/home/testuser",
+		WorkDir: "/home/testuser/myproject",
+	}
+
+	paths := resolveBasePreset(ctx, nil)
+
+	expectedExcludes := []string{
+		"/home/testuser/.ssh",
+		"/home/testuser/.gnupg",
+		"/home/testuser/.aws",
+	}
+
+	if len(paths.Exclude) != len(expectedExcludes) {
+		t.Errorf("@base should have exactly %d exclude paths, got %d: %v",
+			len(expectedExcludes), len(paths.Exclude), paths.Exclude)
+	}
+
+	for _, expected := range expectedExcludes {
+		if !sliceContains(paths.Exclude, expected) {
+			t.Errorf("@base should exclude %q, got: %v", expected, paths.Exclude)
+		}
 	}
 }
