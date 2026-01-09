@@ -433,8 +433,8 @@ func Test_DefaultConfig_Has_Git_Preset(t *testing.T) {
 		t.Errorf("git should be preset, got kind %v", gitRule.Kind)
 	}
 
-	if gitRule.Value != "@git" {
-		t.Errorf("git preset value should be @git, got %q", gitRule.Value)
+	if gitRule.Value != PresetGit {
+		t.Errorf("git preset value should be %s, got %q", PresetGit, gitRule.Value)
 	}
 }
 
@@ -460,7 +460,7 @@ func Test_CommandRule_UnmarshalJSON(t *testing.T) {
 		{
 			name:  "string with @ prefix is preset",
 			input: `"@git"`,
-			want:  CommandRule{Kind: CommandRulePreset, Value: "@git"},
+			want:  CommandRule{Kind: CommandRulePreset, Value: PresetGit},
 		},
 		{
 			name:  "string without @ prefix is script",
@@ -549,7 +549,7 @@ func Test_CommandRule_MarshalJSON(t *testing.T) {
 		},
 		{
 			name:  "preset keeps string",
-			input: CommandRule{Kind: CommandRulePreset, Value: "@git"},
+			input: CommandRule{Kind: CommandRulePreset, Value: PresetGit},
 			want:  `"@git"`,
 		},
 		{
@@ -602,7 +602,7 @@ func Test_Config_Commands_Parse(t *testing.T) {
 				}`,
 			},
 			want: map[string]CommandRule{
-				"git":  {Kind: CommandRulePreset, Value: "@git"},
+				"git":  {Kind: CommandRulePreset, Value: PresetGit},
 				"rm":   {Kind: CommandRuleBlock, Value: ""},
 				"npm":  {Kind: CommandRuleRaw, Value: ""},
 				"curl": {Kind: CommandRuleScript, Value: "~/bin/curl-wrapper"},
@@ -728,7 +728,7 @@ func Test_Config_Commands_Merge(t *testing.T) {
 				}`,
 			},
 			want: map[string]CommandRule{
-				"git": {Kind: CommandRulePreset, Value: "@git"}, // from defaults
+				"git": {Kind: CommandRulePreset, Value: PresetGit}, // from defaults
 			},
 		},
 		{
@@ -741,8 +741,8 @@ func Test_Config_Commands_Merge(t *testing.T) {
 				}`,
 			},
 			want: map[string]CommandRule{
-				"git": {Kind: CommandRulePreset, Value: "@git"}, // from defaults
-				"rm":  {Kind: CommandRuleBlock, Value: ""},      // added by project
+				"git": {Kind: CommandRulePreset, Value: PresetGit}, // from defaults
+				"rm":  {Kind: CommandRuleBlock, Value: ""},         // added by project
 			},
 		},
 		{

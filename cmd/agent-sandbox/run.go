@@ -74,11 +74,11 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 	forceKillCh := make(chan struct{})
 	ctx = WithForceKillCh(ctx, forceKillCh)
 
-	// Determine if we need to load config (exec needs it, check doesn't)
+	// Determine if we need to load config (exec needs it, check and wrap-binary don't)
 	cmdName := commandAndArgs[0]
 
 	var cfg Config
-	if cmdName == "check" {
+	if cmdName == "check" || cmdName == "wrap-binary" {
 		cfg = DefaultConfig()
 	} else {
 		// Load config for exec command
@@ -94,18 +94,27 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		}
 	}
 
-	// Create all commands
+	// Create all commands (visible in help)
 	commands := []*Command{
 		ExecCmd(&cfg, env),
 		CheckCmd(),
 	}
 
-	commandMap := make(map[string]*Command, len(commands)*2)
+	// Hidden commands (not shown in help, but still dispatchable)
+	hiddenCommands := []*Command{
+		WrapBinaryCmd(),
+	}
+
+	commandMap := make(map[string]*Command, len(commands)*2+len(hiddenCommands))
 	for _, cmd := range commands {
 		commandMap[cmd.Name()] = cmd
 		for _, alias := range cmd.Aliases {
 			commandMap[alias] = cmd
 		}
+	}
+
+	for _, cmd := range hiddenCommands {
+		commandMap[cmd.Name()] = cmd
 	}
 
 	// Dispatch to command
@@ -275,7 +284,7 @@ func insertExecIfNeeded(args []string) []string {
 		}
 
 		// Found a command or argument
-		if arg == "check" || arg == "exec" {
+		if arg == "check" || arg == "exec" || arg == "wrap-binary" {
 			return args // Already has explicit command
 		}
 

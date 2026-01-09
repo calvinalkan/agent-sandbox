@@ -137,7 +137,7 @@ func DefaultConfig() Config {
 		Network: boolPtr(true),
 		Docker:  boolPtr(false),
 		Commands: map[string]CommandRule{
-			"git": {Kind: CommandRulePreset, Value: "@git"},
+			"git": {Kind: CommandRulePreset, Value: PresetGit},
 		},
 	}
 }
