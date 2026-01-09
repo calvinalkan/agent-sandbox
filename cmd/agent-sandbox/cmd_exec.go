@@ -165,7 +165,7 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 			defer tempRes.Cleanup()
 
 			// 13. Generate bwrap arguments for filesystem mounts (including excludes)
-			bwrapArgs, err := BwrapArgs(sortedPaths, cfg, tempRes.EmptyFile)
+			bwrapArgs, err := BwrapArgs(sortedPaths, cfg, tempRes.EmptyFile, env)
 			if err != nil {
 				return err
 			}

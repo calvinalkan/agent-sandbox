@@ -118,7 +118,7 @@ func GenerateExcludeMounts(excludePaths []ResolvedPath, emptyFile string) []stri
 //
 // Returns an error if docker is enabled but the socket cannot be found or resolved,
 // or if the agent-sandbox binary cannot be located.
-func BwrapArgs(paths []ResolvedPath, cfg *Config, emptyFile string) ([]string, error) {
+func BwrapArgs(paths []ResolvedPath, cfg *Config, emptyFile string, env map[string]string) ([]string, error) {
 	// Process cleanup and namespace setup first
 	args := []string{
 		"--die-with-parent", // Auto-cleanup when parent dies
@@ -160,13 +160,13 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config, emptyFile string) ([]string, e
 
 	args = append(args, dockerArgs...)
 
-	// Mount agent-sandbox binary into sandbox
-	selfArgs, err := selfBinaryArgs()
+	// Mount agent-sandbox binary at /run/agent-sandbox (for nested sandbox and wrap-binary)
+	selfBinary, err := getSelfBinary()
 	if err != nil {
 		return nil, err
 	}
 
-	args = append(args, selfArgs...)
+	args = append(args, "--ro-bind", selfBinary, SandboxBinaryPath)
 
 	// Mount marker file for sandbox detection (used by "check" command)
 	// /dev/null always exists, so no temp file is needed.
@@ -196,6 +196,11 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config, emptyFile string) ([]string, e
 	if emptyFile != "" {
 		args = append(args, GenerateExcludeMounts(paths, emptyFile)...)
 	}
+
+	// Overlay agent-sandbox binary over all PATH locations (must come LAST)
+	// This ensures `agent-sandbox check` works regardless of which binary is in PATH
+	// By mounting last, we override any earlier mounts of parent directories
+	args = append(args, selfBinaryOverlayArgs(selfBinary, env)...)
 
 	// Working directory
 	args = append(args, "--chdir", cfg.EffectiveCwd)
@@ -274,29 +279,52 @@ func dockerSocketMaskPath(socketPath string) string {
 	return socketPath
 }
 
-// selfBinaryArgs generates bwrap arguments to mount the agent-sandbox binary
-// into the sandbox. This enables:
-// - The wrap-binary command to work (command wrappers exec agent-sandbox)
-// - Users running `agent-sandbox check` inside the sandbox
-// - Nested sandbox calls
-//
-// The binary is mounted read-only at /run/agent-sandbox.
-// Symlinks are resolved to get the real binary path.
-func selfBinaryArgs() ([]string, error) {
-	// Find our own executable
+// getSelfBinary returns the resolved path to the agent-sandbox binary.
+func getSelfBinary() (string, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSelfBinaryNotFound, err)
+		return "", fmt.Errorf("%w: %w", ErrSelfBinaryNotFound, err)
 	}
 
 	// Resolve any symlinks to get the real binary path
 	self, err = filepath.EvalSymlinks(self)
 	if err != nil {
-		return nil, fmt.Errorf("%w: cannot resolve symlinks: %w", ErrSelfBinaryNotFound, err)
+		return "", fmt.Errorf("%w: cannot resolve symlinks: %w", ErrSelfBinaryNotFound, err)
 	}
 
-	// Mount at standard location inside the sandbox
-	return []string{"--ro-bind", self, SandboxBinaryPath}, nil
+	return self, nil
+}
+
+// selfBinaryOverlayArgs generates bwrap arguments to overlay the agent-sandbox
+// binary over all other agent-sandbox binaries found in PATH.
+//
+// This ensures `agent-sandbox check` works correctly inside the sandbox,
+// regardless of which version of agent-sandbox is first in PATH.
+//
+// Only resolved paths (symlink targets) are overlaid, not symlinks themselves,
+// because bwrap can't create mount points over symlinks when root is read-only.
+func selfBinaryOverlayArgs(self string, env map[string]string) []string {
+	// Skip if already inside a sandbox (nested sandbox case)
+	if isInsideSandbox() {
+		return nil
+	}
+
+	binPaths := BinaryLocations("agent-sandbox", env)
+	seen := make(map[string]bool)
+	seen[self] = true // Don't overlay self
+
+	var args []string
+
+	for _, bp := range binPaths {
+		// Only mount over the resolved location (symlink target)
+		// Symlinks will naturally resolve to our overlaid binary
+		if !seen[bp.Resolved] {
+			seen[bp.Resolved] = true
+			args = append(args, "--ro-bind", self, bp.Resolved)
+		}
+	}
+
+	return args
 }
 
 // AddWrapperMounts generates bwrap arguments to mount real binaries for command wrappers.

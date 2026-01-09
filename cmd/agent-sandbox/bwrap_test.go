@@ -28,7 +28,7 @@ const (
 func mustBwrapArgs(t *testing.T, paths []ResolvedPath, cfg *Config) []string {
 	t.Helper()
 
-	args, err := BwrapArgs(paths, cfg, "")
+	args, err := BwrapArgs(paths, cfg, "", nil)
 	if err != nil {
 		t.Fatalf("BwrapArgs returned unexpected error: %v", err)
 	}
@@ -850,52 +850,40 @@ func Test_BwrapArgs_Self_Binary_Mount_Comes_Before_Path_Mounts(t *testing.T) {
 	}
 }
 
-func Test_selfBinaryArgs_Returns_Ro_Bind_Args(t *testing.T) {
+func Test_getSelfBinary_Returns_Valid_Path(t *testing.T) {
 	t.Parallel()
 
-	args, err := selfBinaryArgs()
+	self, err := getSelfBinary()
 	if err != nil {
-		t.Fatalf("selfBinaryArgs() returned error: %v", err)
+		t.Fatalf("getSelfBinary() returned error: %v", err)
 	}
-
-	if len(args) != 3 {
-		t.Fatalf("expected 3 args, got %d: %v", len(args), args)
-	}
-
-	if args[0] != bwrapRoBind {
-		t.Errorf("expected first arg to be %s, got: %s", bwrapRoBind, args[0])
-	}
-
-	// args[1] is the resolved path to the binary (varies by system)
-	// Just verify it's not empty
-	if args[1] == "" {
-		t.Error("expected second arg (binary path) to be non-empty")
-	}
-
-	if args[2] != SandboxBinaryPath {
-		t.Errorf("expected third arg to be %s, got: %s", SandboxBinaryPath, args[2])
-	}
-}
-
-func Test_selfBinaryArgs_Resolves_Binary_Path(t *testing.T) {
-	t.Parallel()
-
-	args, err := selfBinaryArgs()
-	if err != nil {
-		t.Fatalf("selfBinaryArgs() returned error: %v", err)
-	}
-
-	binaryPath := args[1]
 
 	// The binary path should be an absolute path
-	if !filepath.IsAbs(binaryPath) {
-		t.Errorf("expected absolute path, got: %s", binaryPath)
+	if !filepath.IsAbs(self) {
+		t.Errorf("expected absolute path, got: %s", self)
 	}
 
 	// The binary should exist
-	_, err = os.Stat(binaryPath)
+	_, err = os.Stat(self)
 	if err != nil {
-		t.Errorf("binary path %s should exist: %v", binaryPath, err)
+		t.Errorf("binary path %s should exist: %v", self, err)
+	}
+}
+
+func Test_selfBinaryOverlayArgs_Returns_Empty_When_No_Other_Binaries(t *testing.T) {
+	t.Parallel()
+
+	self, err := getSelfBinary()
+	if err != nil {
+		t.Fatalf("getSelfBinary() returned error: %v", err)
+	}
+
+	// Use empty env so no agent-sandbox binaries are found in PATH
+	args := selfBinaryOverlayArgs(self, nil)
+
+	// Should return empty slice when no other binaries found
+	if len(args) != 0 {
+		t.Errorf("expected empty args with no PATH, got: %v", args)
 	}
 }
 
