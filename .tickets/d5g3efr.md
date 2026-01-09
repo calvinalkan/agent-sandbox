@@ -1,7 +1,8 @@
 ---
 schema_version: 1
 id: d5g3efr
-status: open
+status: closed
+closed: 2026-01-09T06:11:46Z
 blocked-by: [d5g389g, d5g35f8]
 created: 2026-01-08T23:01:19Z
 type: task

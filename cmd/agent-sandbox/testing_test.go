@@ -550,13 +550,10 @@ func (r *GitRepo) Commit(message string) {
 }
 
 // AddWorktree creates a new worktree at the specified path with a new branch.
-// Returns the worktree directory path.
-func (r *GitRepo) AddWorktree(worktreeDir, branchName string) string {
+func (r *GitRepo) AddWorktree(worktreeDir, branchName string) {
 	r.t.Helper()
 
 	r.run("worktree", "add", worktreeDir, "-b", branchName)
-
-	return worktreeDir
 }
 
 // gitEnvExcludes lists git environment variables that should be excluded
