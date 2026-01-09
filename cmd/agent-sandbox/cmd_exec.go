@@ -52,6 +52,16 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 		Long:    "Run a command inside the bubblewrap sandbox with configured filesystem access.",
 		Aliases: []string{},
 		Exec: func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+			// Create debug logger (nil output means disabled)
+			debugEnabled, _ := flags.GetBool("debug")
+
+			var debug *DebugLogger
+			if debugEnabled {
+				debug = NewDebugLogger(stderr)
+			} else {
+				debug = NewDebugLogger(nil)
+			}
+
 			err := checkPlatformPrerequisites()
 			if err != nil {
 				return err
@@ -68,12 +78,20 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 				return ErrNoCommand
 			}
 
+			// Output config loading debug info
+			if cfg != nil {
+				debugConfigLoading(debug, cfg)
+			}
+
 			// Apply CLI flags to config (highest priority)
 			if cfg != nil {
 				err = applyExecFlags(cfg, flags)
 				if err != nil {
 					return err
 				}
+
+				// Output config merge debug info (after CLI flags applied)
+				debugConfigMerge(debug, cfg, flags)
 			}
 
 			// Expand presets with context

@@ -117,6 +117,10 @@ type Config struct {
 
 	// Resolved (not serialized)
 	EffectiveCwd string `json:"-"`
+
+	// LoadedConfigFiles tracks which config files were loaded (for debug output).
+	// Key is the config type (global, project, explicit), value is the path.
+	LoadedConfigFiles map[string]string `json:"-"`
 }
 
 // FilesystemConfig holds filesystem access rules.
@@ -183,6 +187,7 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 
 	// Start with defaults
 	cfg := DefaultConfig()
+	cfg.LoadedConfigFiles = make(map[string]string)
 
 	// Load global config (always loaded if exists)
 	globalConfigBasePath, err := getUserConfigBasePath(input.Env)
@@ -196,6 +201,7 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 			globalCfg, loadErr := loadConfigFile(globalConfigPath)
 			if loadErr == nil {
 				cfg = mergeConfigs(&cfg, &globalCfg)
+				cfg.LoadedConfigFiles["global"] = globalConfigPath
 			} else {
 				// File exists but is invalid - this is an error
 				return Config{}, loadErr
@@ -221,6 +227,7 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 		}
 
 		cfg = mergeConfigs(&cfg, &explicitCfg)
+		cfg.LoadedConfigFiles["explicit"] = configPath
 	} else {
 		// Load project config
 		projectConfigBasePath := filepath.Join(workDir, ".agent-sandbox")
@@ -230,6 +237,7 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 			projectCfg, loadErr := loadConfigFile(projectConfigPath)
 			if loadErr == nil {
 				cfg = mergeConfigs(&cfg, &projectCfg)
+				cfg.LoadedConfigFiles["project"] = projectConfigPath
 			} else {
 				// File exists but is invalid - this is an error
 				return Config{}, loadErr
@@ -337,8 +345,14 @@ func loadConfigFile(path string) (Config, error) {
 
 // mergeConfigs merges override into base, with override taking precedence.
 // Empty/zero values in override do not override base values.
+// Note: LoadedConfigFiles from base is preserved (caller updates it after merge).
 func mergeConfigs(base, override *Config) Config {
 	result := *base
+
+	// Preserve LoadedConfigFiles map from base (it's updated by caller)
+	if base.LoadedConfigFiles != nil {
+		result.LoadedConfigFiles = base.LoadedConfigFiles
+	}
 
 	if override.Network != nil {
 		result.Network = override.Network
