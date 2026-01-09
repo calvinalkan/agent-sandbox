@@ -116,6 +116,11 @@ func cmdStart(args []string) {
 		os.Exit(1)
 	}
 
+	// Warn if git working directory is not clean
+	if !isGitClean() {
+		fmt.Fprintln(os.Stderr, "warning: git working directory is not clean (uncommitted changes won't be in worktrees)")
+	}
+
 	// Check if already running
 	if resp, err := sendCommand("ping"); err == nil && resp == "pong" {
 		fmt.Fprintln(os.Stderr, "error: daemon already running")
@@ -310,6 +315,11 @@ func cmdRun(args []string) {
 	if _, err := os.Stat(promptFile); err != nil {
 		fmt.Fprintf(os.Stderr, "error: prompt file not found: %s\n", promptFile)
 		os.Exit(1)
+	}
+
+	// Warn if git working directory is not clean
+	if !isGitClean() {
+		fmt.Fprintln(os.Stderr, "warning: git working directory is not clean (uncommitted changes won't be in worktrees)")
 	}
 
 	agentRunner = *runner
@@ -980,4 +990,14 @@ func pidPath() string {
 
 func logPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agentloop-%s.log", tmuxSession))
+}
+
+func isGitClean() bool {
+	cmd := exec.Command("git", "status", "--porcelain")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return false // assume not clean if we can't check
+	}
+	return strings.TrimSpace(out.String()) == ""
 }
