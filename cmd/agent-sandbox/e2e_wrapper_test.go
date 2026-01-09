@@ -326,6 +326,58 @@ func Test_Sandbox_Git_Preset_Blocks_Push_Force(t *testing.T) {
 	AssertContains(t, stderr, "force-with-lease")
 }
 
+func Test_Sandbox_Git_Preset_Blocks_Git_Core_Binary_Bypass(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	// Check if /usr/lib/git-core/git exists on this system
+	_, err := os.Stat("/usr/lib/git-core/git")
+	if err != nil {
+		t.Skip("/usr/lib/git-core/git not found, skipping test")
+	}
+
+	env, cleanup := setupGitEnv(t)
+	defer cleanup()
+
+	// Attempt to bypass the @git wrapper by calling the git-core binary directly
+	// This should also be blocked because we shadow /usr/lib/git-core/git
+	_, stderr, code := RunBinaryWithEnv(t, env, "-C", env["WORKDIR"], "/usr/lib/git-core/git", "checkout", "main")
+
+	if code == 0 {
+		t.Error("expected /usr/lib/git-core/git checkout to be blocked")
+	}
+
+	// Should show the same block message as regular git
+	AssertContains(t, stderr, "checkout")
+	AssertContains(t, stderr, "switch")
+}
+
+func Test_Sandbox_Git_Preset_Blocks_Git_Core_Binary_Status_Works(t *testing.T) {
+	t.Parallel()
+	RequireBwrap(t)
+
+	// Check if /usr/lib/git-core/git exists on this system
+	_, err := os.Stat("/usr/lib/git-core/git")
+	if err != nil {
+		t.Skip("/usr/lib/git-core/git not found, skipping test")
+	}
+
+	env, cleanup := setupGitEnv(t)
+	defer cleanup()
+
+	// Non-blocked operations via /usr/lib/git-core/git should work
+	stdout, stderr, code := RunBinaryWithEnv(t, env, "-C", env["WORKDIR"], "/usr/lib/git-core/git", "status")
+
+	if code != 0 {
+		t.Errorf("expected /usr/lib/git-core/git status to succeed, got exit %d\nstderr: %s", code, stderr)
+	}
+
+	// Should show status output
+	if !strings.Contains(stdout, "branch") && !strings.Contains(stdout, "clean") {
+		t.Errorf("expected git status output, got: %s", stdout)
+	}
+}
+
 // ============================================================================
 // @git Preset Tests - Allowed Operations
 // ============================================================================

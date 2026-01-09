@@ -182,8 +182,13 @@ func ExecCmd(cfg *Config, env map[string]string) *Command {
 
 			// Find binary locations for wrapped commands
 			binPaths := make(map[string][]BinaryPath)
+
 			for cmdName := range cfg.Commands {
-				binPaths[cmdName] = BinaryLocations(cmdName, env)
+				// Find binaries in PATH
+				paths := BinaryLocations(cmdName, env)
+				// Also check known non-PATH locations (e.g., /usr/lib/git-core/git)
+				paths = append(paths, AdditionalBinaryPaths(cmdName)...)
+				binPaths[cmdName] = paths
 			}
 
 			// Generate random runtime base path for sandbox

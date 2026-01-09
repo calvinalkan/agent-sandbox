@@ -81,6 +81,57 @@ func BinaryLocations(name string, env map[string]string) []BinaryPath {
 	return result
 }
 
+// additionalBinaryPaths returns known non-PATH locations for specific commands.
+// These are paths that should also be wrapped/blocked but are not typically in PATH.
+//
+// For example, git is commonly found at /usr/lib/git-core/git which is not in PATH,
+// but calling it directly would bypass the @git wrapper.
+var additionalBinaryPaths = map[string][]string{
+	"git": {
+		"/usr/lib/git-core/git",
+		"/usr/libexec/git-core/git", // Some distros use libexec instead of lib
+	},
+}
+
+// AdditionalBinaryPaths checks known non-PATH locations for the named binary.
+// Returns any additional paths that exist and are executable.
+// These paths are not typically in PATH but should be wrapped/blocked.
+func AdditionalBinaryPaths(name string) []BinaryPath {
+	knownPaths, ok := additionalBinaryPaths[name]
+	if !ok {
+		return nil
+	}
+
+	result := make([]BinaryPath, 0, len(knownPaths))
+
+	for _, candidate := range knownPaths {
+		// Check if file exists and get its info (Lstat doesn't follow symlinks)
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			continue // Not found
+		}
+
+		// Check if it's executable
+		if !isExecutable(info) {
+			continue
+		}
+
+		// Resolve symlinks to find real binary
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			continue // Broken symlink or other resolution error
+		}
+
+		result = append(result, BinaryPath{
+			Path:     candidate,
+			Resolved: resolved,
+			IsLink:   candidate != resolved,
+		})
+	}
+
+	return result
+}
+
 // isExecutable checks if a file is executable.
 // For regular files, checks if any execute bit is set.
 // Symlinks are considered executable if they exist (will be checked after resolution).

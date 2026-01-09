@@ -571,6 +571,62 @@ func Test_BinaryLocations_Finds_Real_System_Binary(t *testing.T) {
 }
 
 // ============================================================================
+// AdditionalBinaryPaths tests
+// ============================================================================
+
+func Test_AdditionalBinaryPaths_Returns_Git_Core_Path_When_Exists(t *testing.T) {
+	t.Parallel()
+
+	// Check if /usr/lib/git-core/git exists on this system
+	_, err := os.Stat("/usr/lib/git-core/git")
+	if err != nil {
+		t.Skip("/usr/lib/git-core/git not found, skipping test")
+	}
+
+	result := AdditionalBinaryPaths("git")
+
+	if len(result) == 0 {
+		t.Fatal("expected at least one result for git, got 0")
+	}
+
+	// Should include /usr/lib/git-core/git
+	found := false
+
+	for _, p := range result {
+		if p.Path == "/usr/lib/git-core/git" {
+			found = true
+
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("expected /usr/lib/git-core/git in results, got %v", result)
+	}
+}
+
+func Test_AdditionalBinaryPaths_Returns_Empty_For_Unknown_Command(t *testing.T) {
+	t.Parallel()
+
+	result := AdditionalBinaryPaths("unknowncommand")
+
+	if len(result) != 0 {
+		t.Errorf("expected empty result for unknown command, got %d: %v", len(result), result)
+	}
+}
+
+func Test_AdditionalBinaryPaths_Returns_Empty_When_Path_Not_Exists(t *testing.T) {
+	t.Parallel()
+
+	// "npm" has no additional paths defined, so should return empty
+	result := AdditionalBinaryPaths("npm")
+
+	if len(result) != 0 {
+		t.Errorf("expected empty result for npm (no additional paths), got %d: %v", len(result), result)
+	}
+}
+
+// ============================================================================
 // isExecutable tests
 // ============================================================================
 
