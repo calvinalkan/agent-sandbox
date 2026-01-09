@@ -426,7 +426,8 @@ func Test_BwrapArgs_Base_Order_Is_Correct(t *testing.T) {
 	}
 	args := mustBwrapArgs(t, nil, cfg)
 
-	// Verify the base order: die-with-parent, unshare-all, share-net, dev, proc, ro-bind /, tmpfs /run, chdir
+	// Verify the base order: die-with-parent, unshare-all, share-net, ro-bind /, dev, proc, tmpfs /run, chdir
+	// Note: --ro-bind / / comes before --dev and --proc so that the virtual mounts overlay the read-only root
 	// Find indices of key arguments
 	dieIdx := slices.Index(args, "--die-with-parent")
 	unshareIdx := slices.Index(args, "--unshare-all")
@@ -466,16 +467,16 @@ func Test_BwrapArgs_Base_Order_Is_Correct(t *testing.T) {
 		t.Errorf("--unshare-all should come before --share-net")
 	}
 
-	if shareNetIdx > devIdx {
-		t.Errorf("--share-net should come before --dev")
+	if shareNetIdx > roBindRootIdx {
+		t.Errorf("--share-net should come before --ro-bind / /")
+	}
+
+	if roBindRootIdx > devIdx {
+		t.Errorf("--ro-bind / / should come before --dev")
 	}
 
 	if devIdx > procIdx {
 		t.Errorf("--dev should come before --proc")
-	}
-
-	if procIdx > roBindRootIdx {
-		t.Errorf("--proc should come before --ro-bind / /")
 	}
 
 	if roBindRootIdx > tmpfsRunIdx {

@@ -90,11 +90,11 @@ func WrapBinaryCmd() *Command {
 }
 
 // findRealBinary locates the real binary using the path convention.
-// The real binary is at ../real/<cmdName> relative to the current executable.
+// The real binary is at real/<cmdName> relative to the current executable's directory.
 //
 // This works because wrapper scripts exec the agent-sandbox binary at a known path
 // inside the sandbox (e.g., /run/<random>/agent-sandbox/binaries/wrap-binary),
-// and the real binaries are mounted at ../real/<cmdName>.
+// and the real binaries are mounted at binaries/real/<cmdName> (same directory level).
 func findRealBinary(cmdName string) (string, error) {
 	// Get our own executable path
 	self, err := os.Executable()
@@ -108,9 +108,10 @@ func findRealBinary(cmdName string) (string, error) {
 		return "", fmt.Errorf("%w: cannot resolve executable path: %w", ErrRealBinaryNotFound, err)
 	}
 
-	// Real binary is at ../real/<cmdName> relative to our location
+	// Real binary is at real/<cmdName> relative to our location (same directory)
+	// wrap-binary is at binaries/wrap-binary, real git is at binaries/real/git
 	selfDir := filepath.Dir(self)
-	realBinary := filepath.Join(selfDir, "..", "real", cmdName)
+	realBinary := filepath.Join(selfDir, "real", cmdName)
 
 	// Clean the path
 	realBinary = filepath.Clean(realBinary)

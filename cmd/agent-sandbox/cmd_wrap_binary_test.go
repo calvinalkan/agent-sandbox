@@ -481,13 +481,13 @@ func Test_findRealBinary_Locates_Binary_At_Expected_Path(t *testing.T) {
 	//
 	// tempDir/
 	//   binaries/
-	//     agent-sandbox (our "self" executable - simulated)
-	//   real/
-	//     git (the real binary)
+	//     wrap-binary (our "self" executable - simulated)
+	//     real/
+	//       git (the real binary)
 
 	dir := t.TempDir()
 	binariesDir := filepath.Join(dir, "binaries")
-	realDir := filepath.Join(dir, "real")
+	realDir := filepath.Join(binariesDir, "real") // real/ is INSIDE binaries/
 
 	mustCreateDir(t, binariesDir)
 	mustCreateDir(t, realDir)
@@ -499,13 +499,13 @@ func Test_findRealBinary_Locates_Binary_At_Expected_Path(t *testing.T) {
 	// The findRealBinary function uses os.Executable() which we can't easily mock.
 	// This test verifies the path calculation logic instead.
 	//
-	// If self = /path/to/binaries/agent-sandbox
-	// Then realBinary should be /path/to/real/<cmdName>
-	// Which is: filepath.Dir(self) + "/../real/" + cmdName
+	// If self = /path/to/binaries/wrap-binary
+	// Then realBinary should be /path/to/binaries/real/<cmdName>
+	// Which is: filepath.Dir(self) + "/real/" + cmdName
 
-	selfPath := filepath.Join(binariesDir, "agent-sandbox")
+	selfPath := filepath.Join(binariesDir, "wrap-binary")
 	selfDir := filepath.Dir(selfPath)
-	expectedPath := filepath.Clean(filepath.Join(selfDir, "..", "real", "git"))
+	expectedPath := filepath.Clean(filepath.Join(selfDir, "real", "git"))
 
 	if expectedPath != realGit {
 		t.Errorf("path calculation: expected %q, got %q", realGit, expectedPath)

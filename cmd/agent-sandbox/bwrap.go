@@ -103,8 +103,8 @@ func GenerateExcludeMounts(excludePaths []ResolvedPath, emptyFile string) []stri
 //
 // The argument order is important - bwrap processes arguments in order, so:
 //  1. Namespace and process setup (--die-with-parent, --unshare-all, --share-net)
-//  2. Virtual mounts for /dev and /proc
-//  3. Base root filesystem mount (--ro-bind / /)
+//  2. Base root filesystem mount (--ro-bind / /)
+//  3. Virtual mounts for /dev and /proc (overlays read-only /dev with devtmpfs)
 //  4. Isolated runtime tmpfs for /run
 //  5. Docker socket handling (mask or expose)
 //  6. Self binary mount (agent-sandbox at /run/agent-sandbox)
@@ -127,13 +127,14 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config) ([]string, error) {
 		args = append(args, "--share-net")
 	}
 
-	// Always include virtual mounts (per SPEC hardcoded behavior)
-	// Root filesystem read-only (per SPEC security guarantees)
+	// Root filesystem read-only first (per SPEC security guarantees)
+	// Then virtual mounts to overlay /dev and /proc with proper permissions
 	// Isolated runtime tmpfs for /run
+	// Order matters: --ro-bind / / first, then --dev /dev overlays the read-only /dev
 	args = append(args,
+		"--ro-bind", "/", "/",
 		"--dev", "/dev",
 		"--proc", "/proc",
-		"--ro-bind", "/", "/",
 		"--tmpfs", "/run",
 	)
 
