@@ -65,6 +65,8 @@ func main() {
 	ensureTmuxSession()
 
 	lastStatus := time.Now()
+	backoff := 1 * time.Second
+	const maxBackoff = 10 * time.Second
 
 	for {
 		// Check for shutdown signal (non-blocking)
@@ -95,13 +97,9 @@ func main() {
 			lastStatus = time.Now()
 		}
 
-		if len(readyTickets) == 0 {
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		if running >= *numAgents {
-			time.Sleep(1 * time.Second)
+		if len(readyTickets) == 0 || running >= *numAgents {
+			time.Sleep(backoff)
+			backoff = min(backoff*2, maxBackoff) // exponential backoff when idle
 			continue
 		}
 
@@ -110,25 +108,26 @@ func main() {
 		promptBytes, err := os.ReadFile(promptFile)
 		if err != nil {
 			log.Printf("prompt file: %v", err)
-			time.Sleep(1 * time.Second)
+			time.Sleep(backoff)
 			continue
 		}
 
 		wtPath, err := createWorktree(ticketID)
 		if err != nil {
 			log.Printf("worktree failed: %s: %v", ticketID, err)
-			time.Sleep(1 * time.Second)
+			time.Sleep(backoff)
 			continue
 		}
 
 		if err := startAgent(ticketID, wtPath, string(promptBytes)); err != nil {
 			log.Printf("start failed: %s: %v", ticketID, err)
-			time.Sleep(1 * time.Second)
+			time.Sleep(backoff)
 			continue
 		}
 
 		log.Printf("agent started: %s", ticketID)
-		time.Sleep(1 * time.Second)
+		backoff = 1 * time.Second // reset backoff on activity
+		time.Sleep(backoff)
 	}
 }
 
