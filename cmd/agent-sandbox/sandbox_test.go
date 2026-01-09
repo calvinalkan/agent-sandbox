@@ -388,3 +388,29 @@ while true; do sleep 1; done
 		t.Fatal("timeout waiting for process to terminate after signal")
 	}
 }
+
+// ============================================================================
+// E2E tests for self binary mount - agent-sandbox accessible inside sandbox
+// ============================================================================
+
+func Test_Sandbox_Binary_Is_Mounted_Inside(t *testing.T) {
+	t.Parallel()
+
+	RequireBwrap(t)
+
+	c := NewCLITester(t)
+
+	// Check if the agent-sandbox binary exists at the expected path
+	_, stderr, code := c.Run("test", "-f", SandboxBinaryPath)
+
+	if code != 0 {
+		t.Errorf("expected agent-sandbox binary to exist at %s inside sandbox\nstderr: %s", SandboxBinaryPath, stderr)
+	}
+
+	// Also verify it's executable (test -x)
+	_, stderr, code = c.Run("test", "-x", SandboxBinaryPath)
+
+	if code != 0 {
+		t.Errorf("expected agent-sandbox binary to be executable at %s inside sandbox\nstderr: %s", SandboxBinaryPath, stderr)
+	}
+}

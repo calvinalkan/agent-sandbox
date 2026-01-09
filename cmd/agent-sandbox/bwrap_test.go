@@ -720,3 +720,175 @@ func Test_BwrapArgs_Docker_Disabled_Does_Not_Include_Socket_Bind(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// Self binary mount tests
+// ============================================================================
+
+func Test_BwrapArgs_Includes_Self_Binary_Mount(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Network:      boolPtr(true),
+		EffectiveCwd: testHomeUserProject,
+	}
+	args := mustBwrapArgs(t, nil, cfg)
+
+	// Should have --ro-bind <self> /run/agent-sandbox
+	found := false
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+2] == SandboxBinaryPath {
+			found = true
+
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("expected %s <binary> %s in args, got: %v", bwrapRoBind, SandboxBinaryPath, args)
+	}
+}
+
+func Test_BwrapArgs_Self_Binary_Mount_Comes_After_Docker_Socket(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Network:      boolPtr(true),
+		Docker:       boolPtr(false),
+		EffectiveCwd: testHomeUserProject,
+	}
+	args := mustBwrapArgs(t, nil, cfg)
+
+	// Find --tmpfs /run (which comes right before docker handling)
+	tmpfsRunIdx := -1
+
+	for i := range len(args) - 1 {
+		if args[i] == bwrapTmpfs && args[i+1] == testRunPath {
+			tmpfsRunIdx = i
+
+			break
+		}
+	}
+
+	// Find self binary mount
+	selfMountIdx := -1
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+2] == SandboxBinaryPath {
+			selfMountIdx = i
+
+			break
+		}
+	}
+
+	if tmpfsRunIdx == -1 {
+		t.Fatal("expected --tmpfs /run in args")
+	}
+
+	if selfMountIdx == -1 {
+		t.Fatal("expected self binary mount in args")
+	}
+
+	// Self binary mount should come after tmpfs /run
+	if selfMountIdx < tmpfsRunIdx {
+		t.Errorf("self binary mount (idx=%d) should come after --tmpfs /run (idx=%d)", selfMountIdx, tmpfsRunIdx)
+	}
+}
+
+func Test_BwrapArgs_Self_Binary_Mount_Comes_Before_Path_Mounts(t *testing.T) {
+	t.Parallel()
+
+	paths := []ResolvedPath{
+		{Original: "/some/path", Resolved: "/some/path", Access: PathAccessRo, Source: PathSourceProject},
+	}
+	cfg := &Config{
+		Network:      boolPtr(true),
+		EffectiveCwd: testHomeUserProject,
+	}
+	args := mustBwrapArgs(t, paths, cfg)
+
+	// Find self binary mount
+	selfMountIdx := -1
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBind && args[i+2] == SandboxBinaryPath {
+			selfMountIdx = i
+
+			break
+		}
+	}
+
+	// Find path mount
+	pathMountIdx := -1
+
+	for i := range len(args) - 2 {
+		if args[i] == bwrapRoBindTry && args[i+1] == "/some/path" {
+			pathMountIdx = i
+
+			break
+		}
+	}
+
+	if selfMountIdx == -1 {
+		t.Fatal("expected self binary mount in args")
+	}
+
+	if pathMountIdx == -1 {
+		t.Fatal("expected path mount in args")
+	}
+
+	// Self binary mount should come before path mounts
+	if selfMountIdx > pathMountIdx {
+		t.Errorf("self binary mount (idx=%d) should come before path mounts (idx=%d)", selfMountIdx, pathMountIdx)
+	}
+}
+
+func Test_selfBinaryArgs_Returns_Ro_Bind_Args(t *testing.T) {
+	t.Parallel()
+
+	args, err := selfBinaryArgs()
+	if err != nil {
+		t.Fatalf("selfBinaryArgs() returned error: %v", err)
+	}
+
+	if len(args) != 3 {
+		t.Fatalf("expected 3 args, got %d: %v", len(args), args)
+	}
+
+	if args[0] != bwrapRoBind {
+		t.Errorf("expected first arg to be %s, got: %s", bwrapRoBind, args[0])
+	}
+
+	// args[1] is the resolved path to the binary (varies by system)
+	// Just verify it's not empty
+	if args[1] == "" {
+		t.Error("expected second arg (binary path) to be non-empty")
+	}
+
+	if args[2] != SandboxBinaryPath {
+		t.Errorf("expected third arg to be %s, got: %s", SandboxBinaryPath, args[2])
+	}
+}
+
+func Test_selfBinaryArgs_Resolves_Binary_Path(t *testing.T) {
+	t.Parallel()
+
+	args, err := selfBinaryArgs()
+	if err != nil {
+		t.Fatalf("selfBinaryArgs() returned error: %v", err)
+	}
+
+	binaryPath := args[1]
+
+	// The binary path should be an absolute path
+	if !filepath.IsAbs(binaryPath) {
+		t.Errorf("expected absolute path, got: %s", binaryPath)
+	}
+
+	// The binary should exist
+	_, err = os.Stat(binaryPath)
+	if err != nil {
+		t.Errorf("binary path %s should exist: %v", binaryPath, err)
+	}
+}

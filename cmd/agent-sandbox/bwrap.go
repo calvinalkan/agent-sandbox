@@ -10,8 +10,16 @@ import (
 // DockerSocketPath is the standard Docker socket location.
 const DockerSocketPath = "/var/run/docker.sock"
 
+// SandboxBinaryPath is where agent-sandbox is mounted inside the sandbox.
+// We use /run/agent-sandbox because /run is a tmpfs and we can create files there.
+// /usr/bin would require the file to already exist (root is mounted read-only).
+const SandboxBinaryPath = "/run/agent-sandbox"
+
 // ErrDockerSocketNotFound is returned when docker is enabled but the socket cannot be found.
 var ErrDockerSocketNotFound = errors.New("docker socket not found")
+
+// ErrSelfBinaryNotFound is returned when the agent-sandbox binary cannot be located.
+var ErrSelfBinaryNotFound = errors.New("cannot locate agent-sandbox binary")
 
 // BwrapArgs generates bwrap arguments from resolved paths and configuration.
 //
@@ -21,10 +29,12 @@ var ErrDockerSocketNotFound = errors.New("docker socket not found")
 //  3. Base root filesystem mount (--ro-bind / /)
 //  4. Isolated runtime tmpfs for /run
 //  5. Docker socket handling (mask or expose)
-//  6. Individual path mounts, sorted by depth (shallower first)
-//  7. Working directory (--chdir)
+//  6. Self binary mount (agent-sandbox at /usr/bin/agent-sandbox)
+//  7. Individual path mounts, sorted by depth (shallower first)
+//  8. Working directory (--chdir)
 //
-// Returns an error if docker is enabled but the socket cannot be found or resolved.
+// Returns an error if docker is enabled but the socket cannot be found or resolved,
+// or if the agent-sandbox binary cannot be located.
 // Exclude paths are currently ignored (handled by d5g3tgg).
 func BwrapArgs(paths []ResolvedPath, cfg *Config) ([]string, error) {
 	// Process cleanup and namespace setup first
@@ -59,6 +69,14 @@ func BwrapArgs(paths []ResolvedPath, cfg *Config) ([]string, error) {
 	}
 
 	args = append(args, dockerArgs...)
+
+	// Mount agent-sandbox binary into sandbox
+	selfArgs, err := selfBinaryArgs()
+	if err != nil {
+		return nil, err
+	}
+
+	args = append(args, selfArgs...)
 
 	// Process paths in order - ResolveAndSort ensures correct depth ordering
 	// More specific paths come AFTER less specific, so they overlay correctly
@@ -153,4 +171,29 @@ func dockerSocketMaskPath(socketPath string) string {
 	}
 
 	return socketPath
+}
+
+// selfBinaryArgs generates bwrap arguments to mount the agent-sandbox binary
+// into the sandbox. This enables:
+// - The wrap-binary command to work (command wrappers exec agent-sandbox)
+// - Users running `agent-sandbox check` inside the sandbox
+// - Nested sandbox calls
+//
+// The binary is mounted read-only at /run/agent-sandbox.
+// Symlinks are resolved to get the real binary path.
+func selfBinaryArgs() ([]string, error) {
+	// Find our own executable
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrSelfBinaryNotFound, err)
+	}
+
+	// Resolve any symlinks to get the real binary path
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return nil, fmt.Errorf("%w: cannot resolve symlinks: %w", ErrSelfBinaryNotFound, err)
+	}
+
+	// Mount at standard location inside the sandbox
+	return []string{"--ro-bind", self, SandboxBinaryPath}, nil
 }
