@@ -90,9 +90,14 @@ func runMulticall(ctx context.Context, cmdName string, cmdArgs []string, stdin i
 
 		realBinary := filepath.Join(root, "bin", cmdName)
 
-		_, statErr := os.Stat(realBinary)
-		if statErr != nil {
-			return fmt.Errorf("%s: command not available", cmdName)
+		// Block-only policies do not mount a real binary; allow wrapper execution
+		// in that case by clearing AGENT_SANDBOX_REAL when the file is missing.
+		if _, statErr := os.Stat(realBinary); statErr != nil {
+			if os.IsNotExist(statErr) {
+				realBinary = ""
+			} else {
+				return fmt.Errorf("stat %q: %w", realBinary, statErr)
+			}
 		}
 
 		return runPolicy(ctx, &policyRunInput{

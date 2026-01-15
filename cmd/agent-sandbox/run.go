@@ -55,6 +55,13 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		}
 	}
 
+	err := checkPlatformPrerequisites()
+	if err != nil {
+		fprintError(stderr, err)
+
+		return 1
+	}
+
 	flags := flag.NewFlagSet(agentSandboxExecutableName, flag.ContinueOnError)
 	// Stop parsing at first non-flag (the command),
 	// important, oterhwise we can't find where the "real" command begins.
@@ -183,13 +190,6 @@ func runSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, 
 	if debugEnabled {
 		debug = NewDebugLogger(stderr)
 		debugVersion(debug)
-	}
-
-	err := checkPlatformPrerequisites()
-	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
 	}
 
 	homeDir, err := getHomeDir(env)

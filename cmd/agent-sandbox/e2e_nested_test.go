@@ -29,6 +29,36 @@ func Test_Nested_Sandbox_Inherits_Git_Preset(t *testing.T) {
 	}
 }
 
+func Test_Nested_Sandbox_Outer_Block_Uses_Runtime_Binary(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	c := NewCLITester(t)
+	c.Env["HOME"] = t.TempDir()
+
+	victim := filepath.Join(c.Dir, "victim.txt")
+	mustWriteFile(t, victim, "do not delete")
+
+	_, stderr, code := RunBinaryWithEnv(t, c.Env,
+		"-C", c.Dir,
+		"--cmd", "rm=false",
+		sandboxBinaryPath, "rm", victim,
+	)
+
+	if code == 0 {
+		t.Fatal("expected nested rm to be blocked by outer sandbox wrappers, got exit code 0")
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "blocked") {
+		t.Fatalf("expected nested rm to be blocked (stderr contains 'blocked'), got:\n%s", stderr)
+	}
+
+	_, statErr := os.Stat(victim)
+	if statErr != nil {
+		t.Fatalf("expected victim file to still exist on host, stat: %v", statErr)
+	}
+}
+
 func Test_Nested_Sandbox_Cannot_Relax_Command_Wrappers_With_CmdFlag(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
