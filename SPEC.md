@@ -62,7 +62,7 @@ The `--check` flag checks if the current process is running inside an agent-sand
 - `0` = inside sandbox
 - `1` = outside sandbox
 
-The detection mechanism is tamperproof — it cannot be faked or disabled from inside the sandbox.
+Detection is based on the presence of `/run/agent-sandbox/agent-sandbox`; the CLI reserves `/run/agent-sandbox` so policy mounts cannot override it.
 
 ---
 
@@ -338,20 +338,20 @@ Smart wrapper that understands git's argument structure and blocks dangerous ope
 | `git branch -D` | Force deletes unmerged branch | `git branch -d` (safe delete) |
 | `git push --force` | Rewrites remote history | `git push --force-with-lease` |
 
-The wrapper properly parses git's global flags (e.g., `-C`, `--no-pager`) to correctly identify subcommands regardless of flag position.
+The wrapper properly parses git's global flags (e.g., `-C`, `--no-pager`) to correctly identify subcommands regardless of flag position. Inline alias overrides via `-c alias.*` or `--config-env alias.*` are blocked to prevent bypasses (configure aliases outside the sandbox).
 
 When blocked, prints a guidance message to stderr and exits with error.
 
 **Temp directory exception:** If the current working directory is inside the system temp directory (for example `/tmp`), the git wrapper does not block operations. This is intended for tests and throwaway repos.
 
-**Wrapper mechanism:** All paths to the binary are discovered (e.g., `/usr/bin/git`, `/bin/git`, `/usr/local/bin/git`) and symlinks resolved. For blocking (`false`), a blocker is mounted over all locations. For presets and custom wrappers, the real binary is mounted at `/run/agent-sandbox/bin/<cmd>` and wrapper logic is driven by sandbox-internal files (`/run/agent-sandbox/policies/<cmd>` for scripts, `/run/agent-sandbox/presets/<cmd>` for presets). Discovered target paths are then replaced with a launcher that dispatches to the right policy/preset.
+**Wrapper mechanism:** All paths to the binary are discovered (e.g., `/usr/bin/git`, `/bin/git`, `/usr/local/bin/git`) and symlinks resolved. For blocking (`false`), a blocker is mounted over all locations. For presets and custom wrappers, the real binary is mounted at `/run/agent-sandbox/bin/<cmd>` and wrapper logic is driven by sandbox-internal policy files (`/run/agent-sandbox/policies/<cmd>`). Preset policies are plain files whose content starts with `preset:<name>`. Discovered target paths are then replaced with a launcher that dispatches to the right policy/preset.
 
 **Binary/command bypass (obfuscation only):**
 - A process inside the sandbox can often discover wrapper mounts by inspecting `/proc/self/mountinfo`.
 - The "real" tool binary is mounted at `/run/agent-sandbox/bin/<cmd>` (not on PATH). If a process knows that path, it can execute the real tool directly and bypass wrapper/preset logic.
 - To reduce trivial discovery (but not eliminate it), agent-sandbox:
   - uses an ELF launcher at wrapped target paths (so `cat $(command -v git)` doesn't trivially reveal a shell shim), and
-  - makes `/run/agent-sandbox/{bin,policies,presets}` search-only (mode `0111`) so directory listing like `ls /run/agent-sandbox/bin` fails.
+  - makes `/run/agent-sandbox/{bin,policies}` search-only (mode `0111`) so directory listing like `ls /run/agent-sandbox/bin` fails.
 
 These measures are deterrence only. Filesystem rules (`ro`, `rw`, `exclude`) are the enforcement boundary.
 
@@ -462,13 +462,13 @@ exec "$AGENT_SANDBOX_REAL" "$@"
 
 ### Hardcoded Behavior
 
-These cannot be changed by configuration:
+These are mounted or enabled by default and are not configured via presets; later policy mounts can override them (not recommended).
 
 | Item | Behavior |
 |------|----------|
-| `/dev` | Virtual device mount (required for programs) |
-| `/proc` | Virtual proc mount (required for programs) |
-| Sandbox detection | Tamperproof mechanism for `--check` (cannot be faked or disabled from inside) |
+| `/dev` | Virtual device mount (required for programs; may be overridden by later mounts) |
+| `/proc` | Virtual proc mount (required for programs; may be overridden by later mounts) |
+| Sandbox detection | Presence-based check for `/run/agent-sandbox/agent-sandbox`; CLI reserves `/run/agent-sandbox` and rejects policy mounts targeting it |
 | Symlink resolution | Paths are resolved before mounting |
 | Docker socket resolution | Symlinks auto-resolved when `--docker` enabled |
 | Nested sandboxes | Running `agent-sandbox` inside a sandbox works (see Nested Sandboxes section) |
@@ -488,7 +488,7 @@ All environment variables from the parent process are passed through to the sand
 | `ro` paths | Cannot be modified, deleted, or overwritten |
 | `exclude` paths | Contents cannot be read (paths may be detectable as empty placeholders) |
 | Config files | `.agent-sandbox.json`/`.jsonc` and global config are read-only when present; missing config files can be created and affect future runs |
-| Sandbox detection | `--check` result cannot be faked from inside |
+| Sandbox detection | `--check` uses the reserved `/run/agent-sandbox` marker (policy mounts cannot override it in the CLI) |
 | Blocked commands | Cannot execute when wrapper set to `false` or operation forbidden |
 | Network (disabled) | No network access when `--network=false` |
 | Root filesystem | Read-only by default |

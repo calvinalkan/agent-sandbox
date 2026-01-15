@@ -515,13 +515,8 @@ func hasWrapperMarker(runtimeRoot, cmdName string) bool {
 	}
 
 	_, policyErr := os.Stat(filepath.Join(runtimeRoot, "policies", cmdName))
-	if policyErr == nil {
-		return true
-	}
 
-	_, presetErr := os.Stat(filepath.Join(runtimeRoot, "presets", cmdName))
-
-	return presetErr == nil
+	return policyErr == nil
 }
 
 func isWrappedCommandName(cmdName string) bool {

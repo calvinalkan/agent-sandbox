@@ -100,44 +100,7 @@ func Test_Command_Launcher_Uses_ELF_When_Binary_Renamed(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "agent-sandbox-renamed")
 
-	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatalf("read test binary: %v", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, "agent-sandbox-renamed-*")
-	if err != nil {
-		t.Fatalf("create temp binary: %v", err)
-	}
-
-	_, err = tmp.Write(data)
-	if err != nil {
-		_ = tmp.Close()
-
-		t.Fatalf("write temp binary: %v", err)
-	}
-
-	err = tmp.Sync()
-	if err != nil {
-		_ = tmp.Close()
-
-		t.Fatalf("sync temp binary: %v", err)
-	}
-
-	err = tmp.Close()
-	if err != nil {
-		t.Fatalf("close temp binary: %v", err)
-	}
-
-	err = os.Chmod(tmp.Name(), 0o755)
-	if err != nil {
-		t.Fatalf("chmod temp binary: %v", err)
-	}
-
-	err = os.Rename(tmp.Name(), dst)
-	if err != nil {
-		t.Fatalf("rename temp binary: %v", err)
-	}
+	writeRenamedBinary(t, src, dst)
 
 	stdout, stderr, code := runBinaryAtPathWithEnv(t, dst, c.Env, "-C", c.Dir, "--cmd", "cat=false", "bash", "-c", `p=$(command -v cat)
 od -An -t x1 -N 4 "$p" | tr -d $' \n'`)
@@ -157,47 +120,12 @@ func Test_Renamed_Binary_Works_As_CLI_Inside_Sandbox(t *testing.T) {
 	c := NewCLITester(t)
 
 	src := GetTestBinaryPath(t)
-	binDir := t.TempDir()
+	binDir := c.Env["TMPDIR"]
 	ags := filepath.Join(binDir, "ags")
 
-	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatalf("read test binary: %v", err)
-	}
+	writeRenamedBinary(t, src, ags)
 
-	tmp, err := os.CreateTemp(binDir, "ags-*")
-	if err != nil {
-		t.Fatalf("create temp binary: %v", err)
-	}
-
-	_, err = tmp.Write(data)
-	if err != nil {
-		_ = tmp.Close()
-
-		t.Fatalf("write temp binary: %v", err)
-	}
-
-	err = tmp.Sync()
-	if err != nil {
-		_ = tmp.Close()
-
-		t.Fatalf("sync temp binary: %v", err)
-	}
-
-	err = tmp.Close()
-	if err != nil {
-		t.Fatalf("close temp binary: %v", err)
-	}
-
-	err = os.Chmod(tmp.Name(), 0o755)
-	if err != nil {
-		t.Fatalf("chmod temp binary: %v", err)
-	}
-
-	err = os.Rename(tmp.Name(), ags)
-	if err != nil {
-		t.Fatalf("rename temp binary: %v", err)
-	}
+	agsInSandbox := filepath.Join(string(os.PathSeparator), "tmp", filepath.Base(ags))
 
 	// Run sandbox via renamed binary, verify:
 	// - wrapped commands still dispatch (cat is blocked)
@@ -208,7 +136,7 @@ func Test_Renamed_Binary_Works_As_CLI_Inside_Sandbox(t *testing.T) {
 		"bash", "-c", fmt.Sprintf(`set -eu
 cat /etc/hostname >/dev/null 2>&1 && exit 1 || true
 %q --check >/dev/null
-echo OK`, ags),
+echo OK`, agsInSandbox),
 	)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d\nstderr: %s", code, stderr)
@@ -238,7 +166,7 @@ exec "$AGENT_SANDBOX_REAL" "$@"
 lsbin=$(command -v ls)
 [ -x "$lsbin" ]
 
-dirs="/run/agent-sandbox /run/agent-sandbox/bin /run/agent-sandbox/policies /run/agent-sandbox/presets"
+dirs="/run/agent-sandbox /run/agent-sandbox/bin /run/agent-sandbox/policies"
 for d in $dirs; do
   if [ ! -d "$d" ]; then
     printf 'missing dir: %s\n' "$d" >&2
@@ -297,37 +225,15 @@ func setupGitRepoForCommandTests(t *testing.T) (map[string]string, string) {
 	t.Helper()
 
 	homeDir := t.TempDir()
-	workDir := t.TempDir()
+	workDir := testdataTempDir(t)
 	tmpDir := t.TempDir()
 
 	repo := NewGitRepoAt(t, workDir)
 	repo.WriteFile("README.md", "initial content")
 	repo.Commit("initial commit")
 
-	// IMPORTANT: TMPDIR must be set to a DIFFERENT temp dir than workDir!
-	//
-	// Background: The @git preset allows blocked operations (checkout, reset --hard, etc.)
-	// when the working directory is inside the system temp dir. This is so external projects
-	// using the sandbox can run their test suites - those tests often create git repos in
-	// t.TempDir() and need destructive git operations.
-	//
-	// The check works by comparing os.Getwd() against os.TempDir(). Crucially, os.TempDir()
-	// reads the TMPDIR environment variable.
-	//
-	// Here's the trick that makes blocker tests work:
-	//   - workDir = /tmp/TestXXX/001  (where git commands run)
-	//   - tmpDir  = /tmp/TestXXX/002  (what TMPDIR points to)
-	//   - os.TempDir() returns /tmp/TestXXX/002
-	//   - os.Getwd() returns /tmp/TestXXX/001
-	//   - HasPrefix("/tmp/TestXXX/001", "/tmp/TestXXX/002") = FALSE
-	//   - Therefore: isInTempDir() returns false, blocking is enforced!
-	//
-	// If TMPDIR was unset or set to /tmp:
-	//   - os.TempDir() would return /tmp
-	//   - HasPrefix("/tmp/TestXXX/001", "/tmp") = TRUE
-	//   - isInTempDir() returns true, blocking disabled, tests FAIL!
-	//
-	// DO NOT remove TMPDIR or set it to /tmp!
+	// IMPORTANT: The @git preset allows blocked operations when the working dir is
+	// inside /tmp. For blocker tests we must use a workDir outside /tmp.
 	env := map[string]string{
 		"HOME":   homeDir,
 		"PATH":   "/usr/local/bin:/usr/bin:/bin",
@@ -610,5 +516,24 @@ fi
 
 	if !strings.Contains(stderr, "only 'safe' argument allowed") {
 		t.Errorf("expected custom error message, got: %s", stderr)
+	}
+}
+
+func writeRenamedBinary(t *testing.T, src, dst string) {
+	t.Helper()
+
+	err := os.Link(src, dst)
+	if err == nil {
+		return
+	}
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read test binary: %v", err)
+	}
+
+	err = os.WriteFile(dst, data, 0o755)
+	if err != nil {
+		t.Fatalf("write temp binary: %v", err)
 	}
 }

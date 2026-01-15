@@ -984,12 +984,11 @@ func Test_Exec_Allows_More_Restrictive_Filesystem_When_Running_Nested_Sandbox(t 
 
 	c := NewCLITester(t)
 
-	tmpFile := c.TempFile("nested-test.txt")
-	c.WriteFile(filepath.Base(tmpFile), "original")
+	tmpFile := filepath.Join(string(os.PathSeparator), "tmp", "nested-test.txt")
 
 	_, stderr, code := RunBinaryWithEnv(t, c.Env,
 		"-C", c.Dir,
-		sandboxBinaryPath, "--ro", c.Env["TMPDIR"], "-C", c.Env["TMPDIR"],
+		sandboxBinaryPath, "--ro", "/tmp", "-C", "/tmp",
 		"touch", tmpFile,
 	)
 

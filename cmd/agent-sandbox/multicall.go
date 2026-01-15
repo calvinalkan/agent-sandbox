@@ -71,49 +71,114 @@ import (
 var multicallOuterRuntimeRoot = filepath.Join(agentSandboxRuntimeRoot, "outer")
 
 func runMulticall(ctx context.Context, cmdName string, cmdArgs []string, stdin io.Reader, stdout, stderr io.Writer, env map[string]string) error {
+	aliasSubcommand := gitAliasSubcommand(cmdName)
+
+	aliasArgs := cmdArgs
+	if aliasSubcommand != "" {
+		aliasArgs = append([]string{aliasSubcommand}, cmdArgs...)
+	}
+
 	for _, root := range multicallRuntimeRoots() {
 		policy := filepath.Join(root, "policies", cmdName)
 
 		content, err := os.ReadFile(policy)
+		if err == nil {
+			return runPolicyFromContent(ctx, &policyDispatchInput{
+				runtimeRoot: root,
+				policyPath:  policy,
+				cmdName:     cmdName,
+				cmdArgs:     cmdArgs,
+				content:     content,
+				stdin:       stdin,
+				stdout:      stdout,
+				stderr:      stderr,
+				env:         env,
+			})
+		}
+
+		if aliasSubcommand == "" {
+			continue
+		}
+
+		policy = filepath.Join(root, "policies", "git")
+
+		content, err = os.ReadFile(policy)
 		if err != nil {
 			continue
 		}
 
-		if strings.HasPrefix(string(content), "preset:") {
-			presetName := strings.TrimPrefix(strings.TrimSpace(string(content)), "preset:")
-			if presetName == "git" && cmdName == "git" {
-				return runGitPreset(ctx, root, cmdArgs, stdin, stdout, stderr)
-			}
-
-			return fmt.Errorf("%s: command not available", cmdName)
-		}
-
-		realBinary := filepath.Join(root, "bin", cmdName)
-
-		// Block-only policies do not mount a real binary; allow wrapper execution
-		// in that case by clearing AGENT_SANDBOX_REAL when the file is missing.
-		_, statErr := os.Stat(realBinary)
-		if statErr != nil {
-			if !os.IsNotExist(statErr) {
-				return fmt.Errorf("statting %q: %w", realBinary, statErr)
-			}
-
-			realBinary = ""
-		}
-
-		return runPolicy(ctx, &policyRunInput{
-			policyPath: policy,
-			cmdName:    cmdName,
-			realBinary: realBinary,
-			cmdArgs:    cmdArgs,
-			stdin:      stdin,
-			stdout:     stdout,
-			stderr:     stderr,
-			env:        env,
+		return runPolicyFromContent(ctx, &policyDispatchInput{
+			runtimeRoot: root,
+			policyPath:  policy,
+			cmdName:     "git",
+			cmdArgs:     aliasArgs,
+			content:     content,
+			stdin:       stdin,
+			stdout:      stdout,
+			stderr:      stderr,
+			env:         env,
 		})
 	}
 
 	return fmt.Errorf("%s: command not available", cmdName)
+}
+
+type policyDispatchInput struct {
+	runtimeRoot string
+	policyPath  string
+	cmdName     string
+	cmdArgs     []string
+	content     []byte
+	stdin       io.Reader
+	stdout      io.Writer
+	stderr      io.Writer
+	env         map[string]string
+}
+
+func runPolicyFromContent(ctx context.Context, input *policyDispatchInput) error {
+	if strings.HasPrefix(string(input.content), "preset:") {
+		presetName := strings.TrimPrefix(strings.TrimSpace(string(input.content)), "preset:")
+		if presetName == "git" && input.cmdName == "git" {
+			return runGitPreset(ctx, input.runtimeRoot, input.cmdArgs, input.stdin, input.stdout, input.stderr)
+		}
+
+		return fmt.Errorf("%s: command not available", input.cmdName)
+	}
+
+	realBinary := filepath.Join(input.runtimeRoot, "bin", input.cmdName)
+
+	// Block-only policies do not mount a real binary; allow wrapper execution
+	// in that case by clearing AGENT_SANDBOX_REAL when the file is missing.
+	_, statErr := os.Stat(realBinary)
+	if statErr != nil {
+		if !os.IsNotExist(statErr) {
+			return fmt.Errorf("statting %q: %w", realBinary, statErr)
+		}
+
+		realBinary = ""
+	}
+
+	return runPolicy(ctx, &policyRunInput{
+		policyPath: input.policyPath,
+		cmdName:    input.cmdName,
+		realBinary: realBinary,
+		cmdArgs:    input.cmdArgs,
+		stdin:      input.stdin,
+		stdout:     input.stdout,
+		stderr:     input.stderr,
+		env:        input.env,
+	})
+}
+
+func gitAliasSubcommand(cmdName string) string {
+	switch cmdName {
+	case "git-receive-pack":
+		return "receive-pack"
+	case "git-upload-pack":
+		return "upload-pack"
+	default:
+		return ""
+	}
 }
 
 type policyRunInput struct {
@@ -157,6 +222,10 @@ func runGitPreset(ctx context.Context, runtimeRoot string, cmdArgs []string, std
 	_, err := os.Stat(realBinary)
 	if err != nil {
 		return errors.New("git: command not available")
+	}
+
+	if hasInlineAliasConfig(cmdArgs) {
+		return errors.New("git alias overrides via -c/--config-env are blocked; configure aliases outside the sandbox")
 	}
 
 	subcommand, subcommandArgs := parseGitArgs(cmdArgs)
@@ -262,7 +331,7 @@ func parseGitArgs(args []string) (string, []string) {
 		"--namespace": true, "--super-prefix": true, "--config-env": true,
 		"--exec-path": true, "--html-path": true, "--man-path": true,
 		"--info-path": true, "--list-cmds": true, "--attr-source": true,
-		"-p": true, "--paginate": false, "-P": false, "--no-pager": false,
+		"-p": false, "--paginate": false, "-P": false, "--no-pager": false,
 		"--no-replace-obj": false, "--bare": false, "--literal-pathspecs": false,
 		"--glob-pathspecs": false, "--noglob-pathspecs": false,
 		"--icase-pathspecs": false, "--no-optional-locks": false,
@@ -336,11 +405,21 @@ func isBlockedGitOperation(subcommand string, args []string) error {
 			}
 		}
 	case "branch":
-		if hasFlag(args, "-D") {
+		deleteFlag := hasFlag(args, "-d", "--delete")
+
+		forceFlag := hasFlag(args, "-f", "--force")
+		if hasFlag(args, "-D") || (deleteFlag && forceFlag) {
 			return errors.New("git branch -D blocked: force deletes unmerged branch; use 'git branch -d' (safe delete)")
 		}
 	case "push":
-		if hasFlag(args, "--force", "-f") && !hasFlag(args, "--force-with-lease") {
+		forceFlag := hasFlag(args, "--force", "-f")
+
+		forceWithLease := hasFlag(args, "--force-with-lease")
+		if forceFlag {
+			if forceWithLease {
+				return errors.New("git push --force blocked: use 'git push --force-with-lease' without --force/-f")
+			}
+
 			return errors.New("git push --force blocked: rewrites remote history; use 'git push --force-with-lease'")
 		}
 	}
@@ -367,22 +446,137 @@ func multicallRuntimeRoots() []string {
 }
 
 func hasFlag(args []string, flags ...string) bool {
-	flagSet := make(map[string]bool, len(flags))
+	if len(flags) == 0 {
+		return false
+	}
+
+	longFlags := make(map[string]bool)
+	shortFlags := make(map[string]bool)
+
 	for _, f := range flags {
-		flagSet[f] = true
+		if strings.HasPrefix(f, "--") {
+			longFlags[f] = true
+		} else if strings.HasPrefix(f, "-") {
+			shortFlags[f] = true
+		}
 	}
 
 	for _, arg := range args {
-		if idx := strings.Index(arg, "="); idx > 0 {
-			arg = arg[:idx]
+		if arg == "--" {
+			break
 		}
 
-		if flagSet[arg] {
-			return true
+		if strings.HasPrefix(arg, "--") {
+			name := arg
+			if idx := strings.Index(name, "="); idx > 0 {
+				name = name[:idx]
+			}
+
+			if longFlags[name] {
+				return true
+			}
+
+			for target := range longFlags {
+				if matchesLongFlag(name, target) {
+					return true
+				}
+			}
+
+			continue
+		}
+
+		if strings.HasPrefix(arg, "-") && len(arg) > 1 {
+			if len(arg) == 2 {
+				if shortFlags[arg] {
+					return true
+				}
+
+				continue
+			}
+
+			for _, r := range arg[1:] {
+				if shortFlags["-"+string(r)] {
+					return true
+				}
+			}
 		}
 	}
 
 	return false
+}
+
+func matchesLongFlag(arg, target string) bool {
+	if arg == target {
+		return true
+	}
+
+	if !strings.HasPrefix(arg, "--") || !strings.HasPrefix(target, "--") {
+		return false
+	}
+
+	if len(arg) >= len(target) {
+		return false
+	}
+
+	if !strings.HasPrefix(target, arg) {
+		return false
+	}
+
+	if target == "--force-with-lease" {
+		return len(arg) > len("--force")
+	}
+
+	return true
+}
+
+func hasInlineAliasConfig(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+
+		switch {
+		case arg == "-c" || arg == "--config-env":
+			if i+1 >= len(args) {
+				continue
+			}
+
+			if isAliasConfigKey(args[i+1]) {
+				return true
+			}
+
+			i++
+
+			continue
+		case strings.HasPrefix(arg, "-c") && len(arg) > 2 && !strings.HasPrefix(arg, "--"):
+			if isAliasConfigKey(arg[2:]) {
+				return true
+			}
+
+			continue
+		case strings.HasPrefix(arg, "--config-env="):
+			if isAliasConfigKey(strings.TrimPrefix(arg, "--config-env=")) {
+				return true
+			}
+
+			continue
+		}
+	}
+
+	return false
+}
+
+func isAliasConfigKey(value string) bool {
+	key := value
+	if idx := strings.Index(key, "="); idx >= 0 {
+		key = key[:idx]
+	}
+
+	key = strings.TrimSpace(key)
+	key = strings.ToLower(key)
+
+	return strings.HasPrefix(key, "alias.")
 }
 
 // isInTempDir checks if the current working directory is inside /tmp.

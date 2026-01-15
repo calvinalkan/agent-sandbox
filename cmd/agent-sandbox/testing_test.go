@@ -493,11 +493,42 @@ type GitRepo struct {
 	Dir string
 }
 
+func testdataTempDir(t *testing.T) string {
+	t.Helper()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to locate test source directory")
+	}
+
+	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+	baseRoot := filepath.Join(moduleRoot, ".testdata", "tmp")
+
+	err := os.MkdirAll(baseRoot, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create temp root %s: %v", baseRoot, err)
+	}
+
+	tempDir := t.TempDir()
+	dir := filepath.Join(baseRoot, filepath.Base(tempDir))
+
+	err = os.Mkdir(dir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+
+	return dir
+}
+
 // NewGitRepo creates a new git repository in a temp directory.
 func NewGitRepo(t *testing.T) *GitRepo {
 	t.Helper()
 
-	dir := t.TempDir()
+	dir := testdataTempDir(t)
 	repo := &GitRepo{t: t, Dir: dir}
 	repo.run("init")
 	repo.run("config", "user.email", "test@test.com")
