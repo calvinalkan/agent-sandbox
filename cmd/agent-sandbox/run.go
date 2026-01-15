@@ -8,10 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
-	"github.com/calvinalkan/agent-sandbox/sandbox"
 	flag "github.com/spf13/pflag"
 )
 
@@ -34,6 +34,13 @@ const (
 // Returns exit code.
 // sigCh can be nil if signal handling is not needed (e.g., in tests).
 func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[string]string, sigCh <-chan os.Signal) int {
+	err := checkPlatformPrerequisites()
+	if err != nil {
+		fprintError(stderr, err)
+
+		return 1
+	}
+
 	if len(args) > 0 {
 		invoked := filepath.Base(args[0])
 		if invoked != agentSandboxExecutableName && isInsideSandbox() && isWrappedCommandName(invoked) {
@@ -53,13 +60,6 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 
 			return 0
 		}
-	}
-
-	err := checkPlatformPrerequisites()
-	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
 	}
 
 	flags := flag.NewFlagSet(agentSandboxExecutableName, flag.ContinueOnError)
@@ -85,7 +85,7 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 	flags.StringArray("exclude", nil, "Add excluded path")
 	flags.StringArray("cmd", nil, "Command wrapper override (KEY=VALUE, repeatable)")
 
-	err := flags.Parse(args[1:])
+	err = flags.Parse(args[1:])
 	if err != nil {
 		fprintError(stderr, err)
 		fprintln(stderr)
@@ -133,6 +133,19 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		return 1
 	}
 
+	debugEnabled, _ := flags.GetBool("debug")
+
+	var debug *DebugLogger
+	if debugEnabled {
+		debug = NewDebugLogger(stderr)
+		debugVersion(debug)
+	}
+
+	debugConfigLoading(debug, &cfg)
+	debugConfigMerge(debug, &cfg, flags)
+
+	dryRun, _ := flags.GetBool("dry-run")
+
 	// Create nested contexts for two-stage shutdown:
 	// - termCtx cancellation triggers SIGTERM (graceful shutdown)
 	// - killCtx cancellation triggers SIGKILL (force kill)
@@ -147,7 +160,7 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 	done := make(chan int, 1)
 
 	go func() {
-		done <- runSandbox(ctx, stdin, stdout, stderr, &cfg, env, flags, commandAndArgs)
+		done <- ExecuteSandbox(ctx, stdin, stdout, stderr, &cfg, env, commandAndArgs, debug, dryRun)
 	}()
 
 	if sigCh == nil {
@@ -180,117 +193,6 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 
 		return exitCodeSIGINT
 	}
-}
-
-// runSandbox executes a command inside the sandbox.
-func runSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, cfg *Config, env map[string]string, flags *flag.FlagSet, args []string) int {
-	debugEnabled, _ := flags.GetBool("debug")
-
-	var debug *DebugLogger
-	if debugEnabled {
-		debug = NewDebugLogger(stderr)
-		debugVersion(debug)
-	}
-
-	homeDir, err := getHomeDir(env)
-	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
-	}
-
-	if len(args) == 0 {
-		fprintError(stderr, errors.New(errNoCommandMessage))
-
-		return 1
-	}
-
-	debugConfigLoading(debug, cfg)
-	debugConfigMerge(debug, cfg, flags)
-
-	// Nested sandbox behavior: command wrappers are inherited from the outer
-	// sandbox. Inner sandboxes may add new wrappers for commands that are not
-	// already wrapped, but cannot override outer wrappers.
-	if isInsideSandbox() {
-		cfg.Commands = filterNestedCommandRules(cfg.Commands)
-	}
-
-	err = validateCommandRules(cfg.Commands)
-	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
-	}
-
-	sandboxEnv := sandbox.Environment{
-		HomeDir: homeDir,
-		WorkDir: cfg.EffectiveCwd,
-		HostEnv: withAgentSandboxOnPath(env),
-	}
-
-	if debug != nil && debug.Enabled() {
-		debug.Phase("sandbox")
-	}
-
-	sb, err := newSandbox(cfg, sandboxEnv, debug)
-	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
-	}
-
-	cmd, cleanup, err := sb.Command(ctx, args)
-	if err != nil {
-		if cleanup != nil {
-			cleanupErr := cleanup()
-			if cleanupErr != nil {
-				fmt.Fprintf(stderr, "warning: cleanup failed: %v\n", cleanupErr)
-			}
-		}
-
-		fprintError(stderr, err)
-
-		return 1
-	}
-
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	if cleanup != nil {
-		defer func() {
-			cleanupErr := cleanup()
-			if cleanupErr != nil {
-				fmt.Fprintf(stderr, "warning: could not cleanup sandbox resources: %v\n", cleanupErr)
-			}
-		}()
-	}
-
-	bwrapArgs := bwrapArgsFromCmd(cmd.Args)
-
-	DebugCommandWrappers(debug, cfg.Commands)
-	DebugBwrapArgs(debug, bwrapArgs)
-
-	if debug != nil && debug.Enabled() {
-		debug.Phase("process")
-		debug.Logf("starting")
-	}
-
-	dryRun, _ := flags.GetBool("dry-run")
-	if dryRun {
-		printDryRunOutput(stdout, bwrapArgs, args)
-
-		return 0
-	}
-
-	exitCode, err := runSandboxedCommand(ctx, cmd, stderr, debug)
-	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
-	}
-
-	return exitCode
 }
 
 const usageHelp = `agent-sandbox - filesystem sandbox for agentic coding workflows
@@ -346,7 +248,6 @@ func formatVersion() string {
 	return fmt.Sprintf("agent-sandbox %s (%s, %s)", version, commit, date)
 }
 
-// isTerminal returns true if stdin is a terminal.
 func isTerminal() bool {
 	stat, err := os.Stdin.Stat()
 	if err != nil {
@@ -356,37 +257,19 @@ func isTerminal() bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-func getHomeDir(env map[string]string) (string, error) {
-	// Escape hatch for our env abstraction (os.UserHomeDir() checks $HOME aswell)
-	if home := env["HOME"]; home != "" {
-		return home, nil
+func checkPlatformPrerequisites() error {
+	if runtime.GOOS != "linux" {
+		return errors.New(errNotLinuxMessage)
 	}
 
-	home, err := os.UserHomeDir()
+	if os.Getuid() == 0 {
+		return errors.New(errRunningAsRootMessage)
+	}
+
+	_, err := exec.LookPath("bwrap")
 	if err != nil {
-		return "", fmt.Errorf("determining home directory: %w", err)
+		return errors.New(errBwrapNotFoundMessage)
 	}
 
-	return home, nil
-}
-
-func isWrappedCommandName(cmdName string) bool {
-	if cmdName == "" || strings.Contains(cmdName, "/") {
-		return false
-	}
-
-	runtimeRoot := filepath.Dir(sandboxBinaryPath)
-	for _, root := range []string{runtimeRoot, filepath.Join(runtimeRoot, "outer")} {
-		_, policyErr := os.Stat(filepath.Join(root, "policies", cmdName))
-		if policyErr == nil {
-			return true
-		}
-
-		_, presetErr := os.Stat(filepath.Join(root, "presets", cmdName))
-		if presetErr == nil {
-			return true
-		}
-	}
-
-	return false
+	return nil
 }

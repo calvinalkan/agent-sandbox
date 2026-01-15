@@ -59,6 +59,29 @@ func Test_Nested_Sandbox_Outer_Block_Uses_Runtime_Binary(t *testing.T) {
 	}
 }
 
+func Test_Nested_Sandbox_Rejects_Third_Level(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	c := NewCLITester(t)
+	c.Env["HOME"] = t.TempDir()
+
+	_, stderr, code := RunBinaryWithEnv(t, c.Env,
+		"-C", c.Dir,
+		"agent-sandbox", "-C", c.Dir,
+		"agent-sandbox", "-C", c.Dir,
+		"true",
+	)
+
+	if code == 0 {
+		t.Fatal("expected third-level nested sandbox to be rejected, got exit code 0")
+	}
+
+	if !strings.Contains(stderr, errNestedSandboxDepthMessage) {
+		t.Fatalf("expected nested sandbox depth error, got:\n%s", stderr)
+	}
+}
+
 func Test_Nested_Sandbox_Cannot_Relax_Command_Wrappers_With_CmdFlag(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)

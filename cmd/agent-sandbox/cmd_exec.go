@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -24,6 +23,7 @@ const (
 	errRunningAsRootMessage        = "agent-sandbox cannot run as root (use a regular user account)"
 	errBwrapNotFoundMessage        = "bwrap not found in PATH (try installing with: sudo apt install bubblewrap)"
 	errInvalidCommandPresetMessage = "command preset can only be used for its matching command"
+	errNestedSandboxDepthMessage   = "nested sandboxes beyond one level are not supported"
 )
 
 // sandboxBinaryPath is where the agent-sandbox binary is mounted inside the sandbox.
@@ -31,9 +31,6 @@ const (
 // This path lives under the sandbox's /run tmpfs, so its presence is a reliable
 // indicator that we're running inside an agent-sandbox-created sandbox.
 var sandboxBinaryPath = filepath.Join(agentSandboxRuntimeRoot, "agent-sandbox")
-
-// killCtxKey is the context key for the force-kill context.
-type killCtxKey struct{}
 
 // WithKillContext returns a context that carries a separate "kill context".
 // When the kill context is cancelled, the sandboxed process should be sent SIGKILL.
@@ -43,15 +40,125 @@ func WithKillContext(ctx context.Context, killCtx context.Context) context.Conte
 	return context.WithValue(ctx, killCtxKey{}, killCtx)
 }
 
-// getKillContext retrieves the kill context from context.
-// Returns a never-cancelled context if not set.
-func getKillContext(ctx context.Context) context.Context {
-	killCtx, ok := ctx.Value(killCtxKey{}).(context.Context)
-	if !ok {
-		return context.Background()
+type killCtxKey struct{}
+
+func ExecuteSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, cfg *Config, env map[string]string, args []string, debug *DebugLogger, dryRun bool) int {
+	homeDir, err := getHomeDir(env)
+	if err != nil {
+		fprintError(stderr, err)
+
+		return 1
 	}
 
-	return killCtx
+	if len(args) == 0 {
+		fprintError(stderr, errors.New(errNoCommandMessage))
+
+		return 1
+	}
+
+	// Nested sandbox behavior: command wrappers are inherited from the outer
+	// sandbox. Inner sandboxes may add new wrappers for commands that are not
+	// already wrapped, but cannot override outer wrappers.
+	if isInsideSandbox() {
+		err = checkNestedSandboxDepth()
+		if err != nil {
+			fprintError(stderr, err)
+
+			return 1
+		}
+
+		cfg.Commands = filterNestedCommandRules(cfg.Commands)
+	}
+
+	err = validateCommandRules(cfg.Commands)
+	if err != nil {
+		fprintError(stderr, err)
+
+		return 1
+	}
+
+	sandboxEnv := sandbox.Environment{
+		HomeDir: homeDir,
+		WorkDir: cfg.EffectiveCwd,
+		HostEnv: withAgentSandboxOnPath(env),
+	}
+
+	if debug != nil && debug.Enabled() {
+		debug.Phase("sandbox")
+	}
+
+	sb, err := newSandbox(cfg, sandboxEnv, debug)
+	if err != nil {
+		fprintError(stderr, err)
+
+		return 1
+	}
+
+	cmd, cleanup, err := sb.Command(ctx, args)
+	if err != nil {
+		if cleanup != nil {
+			cleanupErr := cleanup()
+			if cleanupErr != nil {
+				fmt.Fprintf(stderr, "warning: cleanup failed: %v\n", cleanupErr)
+			}
+		}
+
+		fprintError(stderr, err)
+
+		return 1
+	}
+
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	if cleanup != nil {
+		defer func() {
+			cleanupErr := cleanup()
+			if cleanupErr != nil {
+				fmt.Fprintf(stderr, "warning: could not cleanup sandbox resources: %v\n", cleanupErr)
+			}
+		}()
+	}
+
+	bwrapArgs := bwrapArgsFromCmd(cmd.Args)
+
+	DebugCommandWrappers(debug, cfg.Commands)
+	DebugBwrapArgs(debug, bwrapArgs)
+
+	if debug != nil && debug.Enabled() {
+		debug.Phase("process")
+		debug.Logf("starting")
+	}
+
+	if dryRun {
+		printDryRunOutput(stdout, bwrapArgs, args)
+
+		return 0
+	}
+
+	exitCode, err := runBwrapProcess(ctx, cmd, stderr, debug)
+	if err != nil {
+		fprintError(stderr, err)
+
+		return 1
+	}
+
+	return exitCode
+}
+
+func getHomeDir(env map[string]string) (string, error) {
+	// Escape hatch for our env abstraction (os.UserHomeDir() checks $HOME aswell)
+	if home := env["HOME"]; home != "" {
+		return home, nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("determining home directory: %w", err)
+	}
+
+	return home, nil
 }
 
 func newSandbox(cfg *Config, env sandbox.Environment, debug *DebugLogger) (*sandbox.Sandbox, error) {
@@ -242,7 +349,8 @@ func bwrapArgsFromCmd(args []string) []string {
 	return args
 }
 
-func runSandboxedCommand(ctx context.Context, cmd *exec.Cmd, stderr io.Writer, _ *DebugLogger) (int, error) {
+// runBwrapProcess starts the bwrap process and handles shutdown signals.
+func runBwrapProcess(ctx context.Context, cmd *exec.Cmd, stderr io.Writer, _ *DebugLogger) (int, error) {
 	if ctx.Err() != nil {
 		return 0, fmt.Errorf("context cancelled: %w", ctx.Err())
 	}
@@ -252,7 +360,10 @@ func runSandboxedCommand(ctx context.Context, cmd *exec.Cmd, stderr io.Writer, _
 		return 1, fmt.Errorf("starting bwrap: %w (check if kernel supports user namespaces: sysctl kernel.unprivileged_userns_clone)", err)
 	}
 
-	killCtx := getKillContext(ctx)
+	killCtx, ok := ctx.Value(killCtxKey{}).(context.Context)
+	if !ok {
+		killCtx = context.Background()
+	}
 
 	waitDone := make(chan error, 1)
 
@@ -366,24 +477,6 @@ func validateCommandRules(commands map[string]CommandRule) error {
 	return nil
 }
 
-// checkPlatformPrerequisites validates the runtime environment.
-func checkPlatformPrerequisites() error {
-	if runtime.GOOS != "linux" {
-		return errors.New(errNotLinuxMessage)
-	}
-
-	if os.Getuid() == 0 {
-		return errors.New(errRunningAsRootMessage)
-	}
-
-	_, err := exec.LookPath("bwrap")
-	if err != nil {
-		return errors.New(errBwrapNotFoundMessage)
-	}
-
-	return nil
-}
-
 // printDryRunOutput formats and prints the bwrap command for dry-run mode.
 // The output is shell-compatible and can be copy-pasted to run manually.
 func printDryRunOutput(output io.Writer, bwrapArgs []string, command []string) {
@@ -474,23 +567,7 @@ func filterNestedCommandRules(commands map[string]CommandRule) map[string]Comman
 
 	out := make(map[string]CommandRule, len(commands))
 	for cmdName, rule := range commands {
-		if cmdName == "" || strings.Contains(cmdName, "/") {
-			out[cmdName] = rule
-
-			continue
-		}
-
-		policyPath := filepath.Join(runtimeRoot, "policies", cmdName)
-
-		_, policyErr := os.Stat(policyPath)
-		if policyErr == nil {
-			continue
-		}
-
-		presetPath := filepath.Join(runtimeRoot, "presets", cmdName)
-
-		_, presetErr := os.Stat(presetPath)
-		if presetErr == nil {
+		if hasWrapperMarker(runtimeRoot, cmdName) {
 			continue
 		}
 
@@ -504,10 +581,59 @@ func filterNestedCommandRules(commands map[string]CommandRule) map[string]Comman
 	return out
 }
 
+func hasWrapperMarker(runtimeRoot, cmdName string) bool {
+	if cmdName == "" || strings.Contains(cmdName, "/") {
+		return false
+	}
+
+	_, policyErr := os.Stat(filepath.Join(runtimeRoot, "policies", cmdName))
+	if policyErr == nil {
+		return true
+	}
+
+	_, presetErr := os.Stat(filepath.Join(runtimeRoot, "presets", cmdName))
+	if presetErr == nil {
+		return true
+	}
+
+	return false
+}
+
 // isInsideSandbox checks if the current process is running inside an agent-sandbox
 // sandbox by testing for the presence of the sandbox-mounted agent-sandbox binary.
 func isInsideSandbox() bool {
 	_, err := os.Stat(sandboxBinaryPath)
 
 	return err == nil
+}
+
+func checkNestedSandboxDepth() error {
+	if !isInsideSandbox() {
+		return nil
+	}
+
+	// The launcher only searches the current runtime and one outer runtime.
+	// A third-level sandbox would skip top-level policies, so block it here.
+	outerBinary := filepath.Join(filepath.Dir(sandboxBinaryPath), "outer", "agent-sandbox")
+	_, err := os.Stat(outerBinary)
+	if err == nil {
+		return errors.New(errNestedSandboxDepthMessage)
+	}
+
+	if os.IsNotExist(err) {
+		return nil
+	}
+
+	return fmt.Errorf("check nested sandbox depth: %w", err)
+}
+
+func isWrappedCommandName(cmdName string) bool {
+	runtimeRoot := filepath.Dir(sandboxBinaryPath)
+	for _, root := range []string{runtimeRoot, filepath.Join(runtimeRoot, "outer")} {
+		if hasWrapperMarker(root, cmdName) {
+			return true
+		}
+	}
+
+	return false
 }
