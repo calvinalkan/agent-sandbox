@@ -116,6 +116,12 @@ func cmdStart(args []string) {
 		os.Exit(1)
 	}
 
+	// Refuse to start if git working directory is not clean
+	if !isGitClean() {
+		fmt.Fprintln(os.Stderr, "error: git working directory is not clean (uncommitted changes won't be in worktrees)")
+		os.Exit(1)
+	}
+
 	// Check if already running
 	if resp, err := sendCommand("ping"); err == nil && resp == "pong" {
 		fmt.Fprintln(os.Stderr, "error: daemon already running")
@@ -312,6 +318,12 @@ func cmdRun(args []string) {
 		os.Exit(1)
 	}
 
+	// Refuse to run if git working directory is not clean
+	if !isGitClean() {
+		fmt.Fprintln(os.Stderr, "error: git working directory is not clean (uncommitted changes won't be in worktrees)")
+		os.Exit(1)
+	}
+
 	agentRunner = *runner
 	setNumAgents(*n)
 
@@ -476,6 +488,16 @@ func runLoop(promptFile string, stopCh <-chan struct{}) {
 			continue
 		}
 
+		// Don't start new agents if git is dirty
+		if !isGitClean() {
+			if running == 0 {
+				log.Printf("git working directory is dirty, waiting...")
+			}
+			time.Sleep(backoff)
+			backoff = min(backoff*2, maxBackoff)
+			continue
+		}
+
 		// Check for orphaned tickets first (in_progress with worktree but no agent)
 		orphanedTickets := getOrphanedTickets()
 
@@ -582,7 +604,8 @@ func getInProgressTickets() []string {
 	return tickets
 }
 
-// getOrphanedTickets returns in_progress tickets that have a worktree but no running agent
+// getOrphanedTickets returns in_progress tickets that have no running agent
+// These will be restarted with a fresh worktree
 func getOrphanedTickets() []string {
 	inProgress := getInProgressTickets()
 	activeTickets := getActiveTickets()
@@ -598,13 +621,8 @@ func getOrphanedTickets() []string {
 		if active[id] {
 			continue // agent is running, not orphaned
 		}
-		// Check if worktree exists
-		wtName := "ticket-" + id
-		pathCmd := exec.Command("wt", "info", wtName, "--field", "path")
-		if pathCmd.Run() == nil {
-			// Worktree exists but no agent running → orphaned
-			orphaned = append(orphaned, id)
-		}
+		// No agent running for this in_progress ticket → orphaned
+		orphaned = append(orphaned, id)
 	}
 	return orphaned
 }
@@ -633,11 +651,15 @@ func getActiveTickets() []string {
 func createWorktree(ticketID string) (string, error) {
 	wtName := "ticket-" + ticketID
 
+	// Always start fresh - delete existing worktree and branch if they exist
+	// This avoids bugs with orphaned/stale worktrees that can't find their tickets
 	pathCmd := exec.Command("wt", "info", wtName, "--field", "path")
-	var pathOut bytes.Buffer
-	pathCmd.Stdout = &pathOut
 	if pathCmd.Run() == nil {
-		return strings.TrimSpace(pathOut.String()), nil
+		log.Printf("cleaning up existing worktree: %s", wtName)
+		exec.Command("wt", "remove", wtName, "--with-branch", "--force").Run()
+	} else {
+		// Worktree doesn't exist, but branch might - clean it up too
+		exec.Command("git", "branch", "-D", wtName).Run()
 	}
 
 	cmd := exec.Command("wt", "create", "-n", wtName)
@@ -649,7 +671,7 @@ func createWorktree(ticketID string) (string, error) {
 	}
 
 	pathCmd = exec.Command("wt", "info", wtName, "--field", "path")
-	pathOut.Reset()
+	var pathOut bytes.Buffer
 	pathCmd.Stdout = &pathOut
 	if err := pathCmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to get worktree path: %v", err)
@@ -980,4 +1002,14 @@ func pidPath() string {
 
 func logPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("agentloop-%s.log", tmuxSession))
+}
+
+func isGitClean() bool {
+	cmd := exec.Command("git", "status", "--porcelain")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return false // assume not clean if we can't check
+	}
+	return strings.TrimSpace(out.String()) == ""
 }

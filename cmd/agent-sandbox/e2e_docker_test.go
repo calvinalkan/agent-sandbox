@@ -10,7 +10,7 @@ import (
 
 func Test_Docker_Ps_Works_When_Docker_Flag_Enabled(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
+
 	RequireDocker(t)
 
 	c := NewCLITester(t)
@@ -24,7 +24,7 @@ func Test_Docker_Ps_Works_When_Docker_Flag_Enabled(t *testing.T) {
 
 func Test_Docker_Ps_Fails_When_Docker_Flag_Disabled(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
+
 	RequireDocker(t)
 
 	c := NewCLITester(t)
@@ -38,7 +38,7 @@ func Test_Docker_Ps_Fails_When_Docker_Flag_Disabled(t *testing.T) {
 
 func Test_Docker_Info_Works_When_Docker_Flag_Enabled(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
+
 	RequireDocker(t)
 
 	c := NewCLITester(t)
@@ -52,7 +52,7 @@ func Test_Docker_Info_Works_When_Docker_Flag_Enabled(t *testing.T) {
 
 func Test_Docker_Fails_Without_Flag_Even_When_Socket_Exists(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
+
 	RequireDocker(t)
 
 	c := NewCLITester(t)
@@ -73,7 +73,7 @@ func Test_Docker_Fails_Without_Flag_Even_When_Socket_Exists(t *testing.T) {
 
 func Test_Docker_Version_Works_When_Docker_Flag_Enabled(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
+
 	RequireDocker(t)
 
 	c := NewCLITester(t)

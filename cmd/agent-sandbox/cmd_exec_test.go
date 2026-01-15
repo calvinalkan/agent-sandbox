@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
-
-	flag "github.com/spf13/pflag"
+	"time"
 )
 
 func Test_Exec_Accepts_Network_Flag_In_Implicit_Mode(t *testing.T) {
@@ -30,7 +32,8 @@ func Test_Exec_Accepts_Docker_Flag_In_Implicit_Mode(t *testing.T) {
 
 	c := NewCLITester(t)
 
-	_, stderr, code := c.Run("--docker", "echo", "hello")
+	// Use --docker=false to test flag parsing without requiring docker socket
+	_, stderr, code := c.Run("--docker=false", "echo", "hello")
 
 	AssertNotContains(t, stderr, "unknown flag")
 
@@ -81,27 +84,13 @@ func Test_Exec_Accepts_Exclude_Flag_In_Implicit_Mode(t *testing.T) {
 	}
 }
 
-func Test_Exec_Accepts_Cmd_Flag_In_Implicit_Mode(t *testing.T) {
-	t.Parallel()
-
-	c := NewCLITester(t)
-
-	_, stderr, code := c.Run("--cmd", "git=true", "echo", "hello")
-
-	AssertNotContains(t, stderr, "unknown flag")
-
-	if code != 0 {
-		t.Errorf("expected exit code 0, got %d\nstderr: %s", code, stderr)
-	}
-}
-
 func Test_Exec_Accepts_Multiple_Flags_In_Implicit_Mode(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
 
-	// Multiple exec flags together
-	_, stderr, code := c.Run("--network=false", "--docker", "--ro", "/tmp", "echo", "hello")
+	// Multiple exec flags together (use --docker=false to avoid requiring docker socket)
+	_, stderr, code := c.Run("--network=false", "--docker=false", "--ro", "/tmp", "echo", "hello")
 
 	AssertNotContains(t, stderr, "unknown flag")
 
@@ -125,271 +114,6 @@ func Test_Exec_Works_With_Global_And_Exec_Flags(t *testing.T) {
 	}
 }
 
-func Test_ApplyExecFlags_Network_Overrides_Config(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultConfig()
-	if cfg.Network == nil || *cfg.Network != true {
-		t.Fatal("default network should be true")
-	}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.Bool("network", true, "")
-	_ = flags.Parse([]string{"--network=false"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if cfg.Network == nil || *cfg.Network != false {
-		t.Errorf("expected network=false after override, got %v", cfg.Network)
-	}
-}
-
-func Test_ApplyExecFlags_Docker_Overrides_Config(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultConfig()
-	if cfg.Docker == nil || *cfg.Docker != false {
-		t.Fatal("default docker should be false")
-	}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.Bool("docker", false, "")
-	_ = flags.Parse([]string{"--docker=true"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if cfg.Docker == nil || *cfg.Docker != true {
-		t.Errorf("expected docker=true after override, got %v", cfg.Docker)
-	}
-}
-
-func Test_ApplyExecFlags_Ro_Appends_To_Config(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{
-		Filesystem: FilesystemConfig{
-			Ro: []string{"/existing"},
-		},
-	}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("ro", nil, "")
-	_ = flags.Parse([]string{"--ro", "/new1", "--ro", "/new2"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	expected := []string{"/existing", "/new1", "/new2"}
-	if len(cfg.Filesystem.Ro) != len(expected) {
-		t.Errorf("expected %v, got %v", expected, cfg.Filesystem.Ro)
-	}
-
-	for i, v := range expected {
-		if cfg.Filesystem.Ro[i] != v {
-			t.Errorf("expected ro[%d]=%q, got %q", i, v, cfg.Filesystem.Ro[i])
-		}
-	}
-}
-
-func Test_ApplyExecFlags_Rw_Appends_To_Config(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{
-		Filesystem: FilesystemConfig{
-			Rw: []string{"/existing"},
-		},
-	}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("rw", nil, "")
-	_ = flags.Parse([]string{"--rw", "/new"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(cfg.Filesystem.Rw) != 2 || cfg.Filesystem.Rw[1] != "/new" {
-		t.Errorf("expected rw to have /existing and /new, got %v", cfg.Filesystem.Rw)
-	}
-}
-
-func Test_ApplyExecFlags_Exclude_Appends_To_Config(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{
-		Filesystem: FilesystemConfig{
-			Exclude: []string{".env"},
-		},
-	}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("exclude", nil, "")
-	_ = flags.Parse([]string{"--exclude", ".secrets"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(cfg.Filesystem.Exclude) != 2 || cfg.Filesystem.Exclude[1] != ".secrets" {
-		t.Errorf("expected exclude to have .env and .secrets, got %v", cfg.Filesystem.Exclude)
-	}
-}
-
-func Test_ApplyExecFlags_Cmd_Merges_Into_Commands(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultConfig() // Has git=@git by default
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("cmd", nil, "")
-	_ = flags.Parse([]string{"--cmd", "rm=false", "--cmd", "git=true"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// rm should be blocked
-	if rule, ok := cfg.Commands["rm"]; !ok || rule.Kind != CommandRuleBlock {
-		t.Errorf("expected rm=block, got %v", cfg.Commands["rm"])
-	}
-
-	// git should be overridden to raw (true)
-	if rule, ok := cfg.Commands["git"]; !ok || rule.Kind != CommandRuleRaw {
-		t.Errorf("expected git=raw, got %v", cfg.Commands["git"])
-	}
-}
-
-func Test_ApplyExecFlags_Cmd_Comma_Separated(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("cmd", nil, "")
-	_ = flags.Parse([]string{"--cmd", "git=true,rm=false"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if rule, ok := cfg.Commands["git"]; !ok || rule.Kind != CommandRuleRaw {
-		t.Errorf("expected git=raw, got %v", cfg.Commands["git"])
-	}
-
-	if rule, ok := cfg.Commands["rm"]; !ok || rule.Kind != CommandRuleBlock {
-		t.Errorf("expected rm=block, got %v", cfg.Commands["rm"])
-	}
-}
-
-func Test_ApplyExecFlags_Cmd_Preset(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("cmd", nil, "")
-	_ = flags.Parse([]string{"--cmd", "git=@git"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if rule, ok := cfg.Commands["git"]; !ok || rule.Kind != CommandRulePreset || rule.Value != "@git" {
-		t.Errorf("expected git=@git preset, got %v", cfg.Commands["git"])
-	}
-}
-
-func Test_ApplyExecFlags_Cmd_Script(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("cmd", nil, "")
-	_ = flags.Parse([]string{"--cmd", "npm=/path/to/wrapper.sh"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if rule, ok := cfg.Commands["npm"]; !ok || rule.Kind != CommandRuleScript || rule.Value != "/path/to/wrapper.sh" {
-		t.Errorf("expected npm=script, got %v", cfg.Commands["npm"])
-	}
-}
-
-func Test_ApplyExecFlags_Unset_Flags_Dont_Override(t *testing.T) {
-	t.Parallel()
-
-	networkVal := false
-	cfg := Config{
-		Network: &networkVal,
-	}
-
-	// Parse flags but don't set any
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.Bool("network", true, "")
-	flags.Bool("docker", false, "")
-	_ = flags.Parse([]string{}) // No flags set
-
-	err := applyExecFlags(&cfg, flags)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Config should be unchanged
-	if cfg.Network == nil || *cfg.Network != false {
-		t.Errorf("expected network to remain false, got %v", cfg.Network)
-	}
-}
-
-func Test_ApplyExecFlags_Invalid_Cmd_Format(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("cmd", nil, "")
-	_ = flags.Parse([]string{"--cmd", "invalid-no-equals"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err == nil {
-		t.Fatal("expected error for invalid --cmd format")
-	}
-
-	AssertContains(t, err.Error(), "invalid --cmd format")
-}
-
-func Test_ApplyExecFlags_Empty_Key_In_Cmd(t *testing.T) {
-	t.Parallel()
-
-	cfg := Config{}
-
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.StringArray("cmd", nil, "")
-	_ = flags.Parse([]string{"--cmd", "=true"})
-
-	err := applyExecFlags(&cfg, flags)
-	if err == nil {
-		t.Fatal("expected error for empty key in --cmd")
-	}
-
-	AssertContains(t, err.Error(), "empty key")
-}
-
 func Test_Help_Works_With_Invalid_Config(t *testing.T) {
 	t.Parallel()
 
@@ -404,7 +128,7 @@ func Test_Help_Works_With_Invalid_Config(t *testing.T) {
 	}
 
 	AssertContains(t, stdout, "agent-sandbox")
-	AssertContains(t, stdout, "Commands:")
+	AssertContains(t, stdout, "Flags:")
 }
 
 func Test_Help_Works_With_Missing_Explicit_Config(t *testing.T) {
@@ -423,101 +147,6 @@ func Test_Help_Works_With_Missing_Explicit_Config(t *testing.T) {
 }
 
 // ============================================================================
-// GetHomeDir tests
-// ============================================================================
-
-func Test_GetHomeDir_Returns_Home_When_Valid_Env_Set(t *testing.T) {
-	t.Parallel()
-
-	// Use temp dir as a valid home directory
-	tmpDir := t.TempDir()
-	env := map[string]string{"HOME": tmpDir}
-
-	home, err := GetHomeDir(env)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if home != tmpDir {
-		t.Errorf("expected home %q, got %q", tmpDir, home)
-	}
-}
-
-func Test_GetHomeDir_Returns_Error_When_Home_Does_Not_Exist(t *testing.T) {
-	t.Parallel()
-
-	env := map[string]string{"HOME": "/nonexistent/path/that/does/not/exist"}
-
-	_, err := GetHomeDir(env)
-	if err == nil {
-		t.Fatal("expected error for nonexistent home directory")
-	}
-
-	AssertContains(t, err.Error(), "cannot determine home directory")
-	AssertContains(t, err.Error(), "/nonexistent/path/that/does/not/exist")
-	AssertContains(t, err.Error(), "does not exist")
-}
-
-func Test_GetHomeDir_Returns_Error_When_Home_Is_File(t *testing.T) {
-	t.Parallel()
-
-	// Create a file instead of a directory
-	tmpDir := t.TempDir()
-	filePath := tmpDir + "/not-a-dir"
-
-	err := os.WriteFile(filePath, []byte("test"), 0o644)
-	if err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
-
-	env := map[string]string{"HOME": filePath}
-
-	_, err = GetHomeDir(env)
-	if err == nil {
-		t.Fatal("expected error when HOME points to a file")
-	}
-
-	AssertContains(t, err.Error(), "is not a directory")
-	AssertContains(t, err.Error(), filePath)
-}
-
-func Test_GetHomeDir_Falls_Back_To_UserHomeDir_When_Env_Empty(t *testing.T) {
-	t.Parallel()
-
-	// Empty env map - should fall back to os.UserHomeDir()
-	env := map[string]string{}
-
-	home, err := GetHomeDir(env)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Result should be a valid directory
-	info, err := os.Stat(home)
-	if err != nil {
-		t.Fatalf("returned home %q does not exist: %v", home, err)
-	}
-
-	if !info.IsDir() {
-		t.Errorf("returned home %q is not a directory", home)
-	}
-}
-
-func Test_GetHomeDir_Error_Suggests_Setting_HOME(t *testing.T) {
-	t.Parallel()
-
-	env := map[string]string{"HOME": "/nonexistent/path"}
-
-	_, err := GetHomeDir(env)
-	if err == nil {
-		t.Fatal("expected error for nonexistent home directory")
-	}
-
-	// Error message should be actionable
-	AssertContains(t, err.Error(), "HOME")
-}
-
-// ============================================================================
 // Exec command home directory validation tests
 // ============================================================================
 
@@ -527,13 +156,13 @@ func Test_Exec_Returns_Error_When_Home_Directory_Does_Not_Exist(t *testing.T) {
 	c := NewCLITester(t)
 	c.Env["HOME"] = "/nonexistent/path/that/does/not/exist"
 
-	_, stderr, code := c.Run("exec", "echo", "hello")
+	_, stderr, code := c.Run("echo", "hello")
 
 	if code == 0 {
-		t.Errorf("expected non-zero exit code for nonexistent home")
+		t.Error("expected non-zero exit code for nonexistent home")
 	}
 
-	AssertContains(t, stderr, "cannot determine home directory")
+	AssertContains(t, stderr, "missing path")
 }
 
 func Test_Exec_Returns_Error_When_Home_Is_File(t *testing.T) {
@@ -546,13 +175,13 @@ func Test_Exec_Returns_Error_When_Home_Is_File(t *testing.T) {
 	c.WriteFile("not-a-dir", "test content")
 	c.Env["HOME"] = filePath
 
-	_, stderr, code := c.Run("exec", "echo", "hello")
+	_, stderr, code := c.Run("echo", "hello")
 
 	if code == 0 {
-		t.Errorf("expected non-zero exit code when HOME is a file")
+		t.Error("expected non-zero exit code when HOME is a file")
 	}
 
-	AssertContains(t, stderr, "is not a directory")
+	AssertContains(t, stderr, "not a directory")
 }
 
 func Test_Exec_Succeeds_When_Home_Is_Valid(t *testing.T) {
@@ -561,7 +190,7 @@ func Test_Exec_Succeeds_When_Home_Is_Valid(t *testing.T) {
 	c := NewCLITester(t)
 	// HOME is auto-set to c.Dir by NewCLITester
 
-	_, stderr, code := c.Run("exec", "echo", "hello")
+	_, stderr, code := c.Run("echo", "hello")
 
 	// Should succeed (exec prints "not yet implemented" but exit 0)
 	if code != 0 {
@@ -675,7 +304,7 @@ func Test_DryRun_Works_With_Explicit_Exec_Command(t *testing.T) {
 
 	c := NewCLITester(t)
 
-	stdout, _, code := c.Run("exec", "--dry-run", "echo", "hello")
+	stdout, _, code := c.Run("--dry-run", "echo", "hello")
 
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
@@ -804,8 +433,6 @@ func Test_ShellQuoteIfNeeded_Escapes_Single_Quotes(t *testing.T) {
 func Test_Exec_Pipeline_Runs_Real_Command_And_Returns_Output(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	stdout, stderr, code := c.Run("echo", "hello from full pipeline")
@@ -819,8 +446,6 @@ func Test_Exec_Pipeline_Runs_Real_Command_And_Returns_Output(t *testing.T) {
 
 func Test_Exec_Pipeline_Returns_Correct_Exit_Code(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -848,8 +473,6 @@ func Test_Exec_Pipeline_Returns_Correct_Exit_Code(t *testing.T) {
 func Test_Exec_WorkDir_Is_Writable_By_Default(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Use TMPDIR for writing since HOME == workdir results in ro (per specificity)
@@ -872,8 +495,6 @@ func Test_Exec_WorkDir_Is_Writable_By_Default(t *testing.T) {
 
 func Test_Exec_Read_Only_Path_Cannot_Be_Written(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -903,8 +524,6 @@ func Test_Exec_Read_Only_Path_Cannot_Be_Written(t *testing.T) {
 func Test_Exec_Exclude_Path_Cannot_Be_Read(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a file to exclude
@@ -925,8 +544,6 @@ func Test_Exec_Exclude_Path_Cannot_Be_Read(t *testing.T) {
 func Test_Exec_Exclude_Directory_Is_Hidden(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a directory to exclude
@@ -943,8 +560,6 @@ func Test_Exec_Exclude_Directory_Is_Hidden(t *testing.T) {
 
 func Test_Exec_RW_Path_Is_Writable(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -974,54 +589,8 @@ func Test_Exec_RW_Path_Is_Writable(t *testing.T) {
 // E2E Tests - Command Wrappers
 // ============================================================================
 
-func Test_Exec_Blocked_Command_Cannot_Run(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-
-	c := NewCLITester(t)
-
-	// Block the 'cat' command and try to run it
-	_, stderr, code := c.Run("--cmd", "cat=false", "cat", "/etc/hostname")
-
-	// Should fail because cat is blocked
-	if code == 0 {
-		t.Error("expected non-zero exit code when running blocked command")
-	}
-
-	// Error message should indicate the command is blocked
-	AssertContains(t, stderr, "blocked")
-}
-
-func Test_Exec_Raw_Command_Bypasses_Wrapper(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-
-	c := NewCLITester(t)
-
-	// Block 'echo' command then try with true to verify raw command works
-	// First verify it's blocked
-	_, stderr, code := c.Run("--cmd", "echo=false", "echo", "should be blocked")
-	if code == 0 {
-		t.Error("expected echo to be blocked with echo=false")
-	}
-
-	AssertContains(t, stderr, "blocked")
-
-	// Now verify that setting echo=true allows it to run
-	stdout, stderr, code := c.Run("--cmd", "echo=true", "echo", "should work")
-	if code != 0 {
-		t.Errorf("expected exit code 0 with echo=true, got %d\nstderr: %s", code, stderr)
-	}
-
-	AssertContains(t, stdout, "should work")
-}
-
 func Test_Exec_Wrapper_Cleanup_Happens_On_Error(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -1050,8 +619,6 @@ func Test_Exec_Wrapper_Cleanup_Happens_On_Error(t *testing.T) {
 func Test_Exec_Debug_Shows_Config_Loading(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	_, stderr, code := c.Run("--debug", "true")
@@ -1064,44 +631,8 @@ func Test_Exec_Debug_Shows_Config_Loading(t *testing.T) {
 	AssertContains(t, stderr, "Config Loading")
 }
 
-func Test_Exec_Debug_Shows_Preset_Expansion(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-
-	c := NewCLITester(t)
-
-	_, stderr, code := c.Run("--debug", "true")
-
-	if code != 0 {
-		t.Fatalf("expected exit code 0, got %d", code)
-	}
-
-	// Debug output should show preset expansion
-	AssertContains(t, stderr, "Preset Expansion")
-}
-
-func Test_Exec_Debug_Shows_Path_Resolution(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-
-	c := NewCLITester(t)
-
-	_, stderr, code := c.Run("--debug", "true")
-
-	if code != 0 {
-		t.Fatalf("expected exit code 0, got %d", code)
-	}
-
-	// Debug output should show path resolution
-	AssertContains(t, stderr, "Path Resolution")
-}
-
 func Test_Exec_Debug_Shows_Bwrap_Args(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -1118,8 +649,6 @@ func Test_Exec_Debug_Shows_Bwrap_Args(t *testing.T) {
 func Test_Exec_Debug_Shows_Command_Wrappers(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	_, stderr, code := c.Run("--debug", "true")
@@ -1135,21 +664,6 @@ func Test_Exec_Debug_Shows_Command_Wrappers(t *testing.T) {
 // ============================================================================
 // E2E Tests - Error Handling
 // ============================================================================
-
-func Test_Exec_Returns_Error_When_WorkDir_Is_Excluded(t *testing.T) {
-	t.Parallel()
-
-	c := NewCLITester(t)
-
-	// Try to exclude the working directory itself
-	_, stderr, code := c.Run("--exclude", ".", "echo", "hello")
-
-	if code == 0 {
-		t.Error("expected non-zero exit code when working directory is excluded")
-	}
-
-	AssertContains(t, stderr, "excluded")
-}
 
 func Test_Exec_Returns_Error_For_Unknown_Preset(t *testing.T) {
 	t.Parallel()
@@ -1227,133 +741,336 @@ func Test_GetLoadedConfigPaths_Returns_Paths_From_Config(t *testing.T) {
 	}
 }
 
-func Test_GetAppliedPresets_Returns_All_By_Default(t *testing.T) {
-	t.Parallel()
-
-	applied := getAppliedPresets(nil)
-
-	if len(applied) != 1 || applied[0] != "@all" {
-		t.Errorf("expected [@all], got %v", applied)
-	}
-}
-
-func Test_GetAppliedPresets_Adds_Explicit_Presets(t *testing.T) {
-	t.Parallel()
-
-	applied := getAppliedPresets([]string{"@base", "@caches"})
-
-	if len(applied) != 3 {
-		t.Errorf("expected 3 presets, got %v", applied)
-	}
-}
-
-func Test_GetAppliedPresets_Skips_Negated_Presets(t *testing.T) {
-	t.Parallel()
-
-	applied := getAppliedPresets([]string{"!@lint/python", "@caches"})
-
-	if len(applied) != 2 {
-		t.Errorf("expected 2 presets, got %v", applied)
-	}
-
-	for _, preset := range applied {
-		if preset == "!@lint/python" || preset == "@lint/python" {
-			t.Errorf("negated preset should not be in applied list: %v", applied)
-		}
-	}
-}
-
-func Test_GetRemovedPresets_Returns_Empty_For_No_Negations(t *testing.T) {
-	t.Parallel()
-
-	removed := getRemovedPresets([]string{"@base", "@caches"})
-
-	if len(removed) != 0 {
-		t.Errorf("expected empty slice, got %v", removed)
-	}
-}
-
-func Test_GetRemovedPresets_Returns_Negated_Presets(t *testing.T) {
-	t.Parallel()
-
-	removed := getRemovedPresets([]string{"!@lint/python", "@caches", "!@git"})
-
-	if len(removed) != 2 {
-		t.Errorf("expected 2 removed presets, got %v", removed)
-	}
-
-	// Check that removed presets are correct (without ! prefix)
-	removedMap := make(map[string]bool)
-	for _, preset := range removed {
-		removedMap[preset] = true
-	}
-
-	if !removedMap["@lint/python"] {
-		t.Error("expected @lint/python in removed list")
-	}
-
-	if !removedMap["@git"] {
-		t.Error("expected @git in removed list")
-	}
-}
-
-func Test_RandomString8_Returns_Correct_Length(t *testing.T) {
-	t.Parallel()
-
-	result := randomString8()
-
-	// 8 bytes = 16 hex chars
-	if len(result) != 16 {
-		t.Errorf("expected 16 chars, got %d", len(result))
-	}
-}
-
-func Test_RandomString8_Returns_Different_Values(t *testing.T) {
-	t.Parallel()
-
-	r1 := randomString8()
-	r2 := randomString8()
-
-	if r1 == r2 {
-		t.Error("expected different random strings")
-	}
-}
-
-func Test_ErrNotLinux_Contains_Hint(t *testing.T) {
+func Test_NotLinuxMessage_Contains_Hint(t *testing.T) {
 	t.Parallel()
 
 	// Verify the error message contains the hint about why Linux is required
-	if !strings.Contains(ErrNotLinux.Error(), "Linux") {
-		t.Error("ErrNotLinux should mention Linux")
+	if !strings.Contains(errNotLinuxMessage, "Linux") {
+		t.Error("errNotLinuxMessage should mention Linux")
 	}
 
-	if !strings.Contains(ErrNotLinux.Error(), "bwrap") || !strings.Contains(ErrNotLinux.Error(), "namespaces") {
-		t.Error("ErrNotLinux should explain why Linux is required (bwrap uses Linux namespaces)")
+	if !strings.Contains(errNotLinuxMessage, "bwrap") || !strings.Contains(errNotLinuxMessage, "namespaces") {
+		t.Error("errNotLinuxMessage should explain why Linux is required (bwrap uses Linux namespaces)")
 	}
 }
 
-func Test_ErrRunningAsRoot_Contains_Hint(t *testing.T) {
+func Test_RunningAsRootMessage_Contains_Hint(t *testing.T) {
 	t.Parallel()
 
 	// Verify the error message contains a hint about what to do
-	if !strings.Contains(ErrRunningAsRoot.Error(), "root") {
-		t.Error("ErrRunningAsRoot should mention root")
+	if !strings.Contains(errRunningAsRootMessage, "root") {
+		t.Error("errRunningAsRootMessage should mention root")
 	}
 
-	if !strings.Contains(ErrRunningAsRoot.Error(), "regular user") {
-		t.Error("ErrRunningAsRoot should suggest using a regular user account")
+	if !strings.Contains(errRunningAsRootMessage, "regular user") {
+		t.Error("errRunningAsRootMessage should suggest using a regular user account")
 	}
 }
 
-func Test_ErrBwrapNotFound_Contains_Install_Hint(t *testing.T) {
+func Test_BwrapNotFoundMessage_Contains_Install_Hint(t *testing.T) {
 	t.Parallel()
 
 	// Verify the error message contains installation instructions
-	if !strings.Contains(ErrBwrapNotFound.Error(), "bwrap") {
-		t.Error("ErrBwrapNotFound should mention bwrap")
+	if !strings.Contains(errBwrapNotFoundMessage, "bwrap") {
+		t.Error("errBwrapNotFoundMessage should mention bwrap")
 	}
 
-	if !strings.Contains(ErrBwrapNotFound.Error(), "apt install bubblewrap") {
-		t.Error("ErrBwrapNotFound should contain installation hint")
+	if !strings.Contains(errBwrapNotFoundMessage, "apt install bubblewrap") {
+		t.Error("errBwrapNotFoundMessage should contain installation hint")
 	}
+}
+
+// ============================================================================
+// Outside Sandbox Tests - --cmd flag
+//
+// These tests verify --cmd behavior when launching a sandbox from outside.
+// ============================================================================
+
+func Test_Exec_CmdFlag(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	t.Run("Accepts_Flag_In_Implicit_Mode", func(t *testing.T) {
+		t.Parallel()
+		c := NewCLITester(t)
+		_, stderr, code := c.Run("--cmd", "git=true", "echo", "hello")
+		AssertNotContains(t, stderr, "unknown flag")
+
+		if code != 0 {
+			t.Errorf("expected exit code 0, got %d\nstderr: %s", code, stderr)
+		}
+	})
+
+	t.Run("Invalid_Format", func(t *testing.T) {
+		t.Parallel()
+		c := NewCLITester(t)
+
+		_, stderr, code := c.Run("--cmd", "invalid-no-equals", "echo", "hi")
+		if code == 0 {
+			t.Fatal("expected error for invalid --cmd format")
+		}
+
+		AssertContains(t, stderr, "invalid --cmd format")
+	})
+
+	t.Run("Empty_Key", func(t *testing.T) {
+		t.Parallel()
+		c := NewCLITester(t)
+
+		_, stderr, code := c.Run("--cmd", "=true", "echo", "hi")
+		if code == 0 {
+			t.Fatal("expected error for empty key in --cmd")
+		}
+
+		AssertContains(t, stderr, "empty key")
+	})
+
+	t.Run("Blocked_Command_Cannot_Run", func(t *testing.T) {
+		t.Parallel()
+		c := NewCLITester(t)
+
+		// Must use RunBinary for actual wrapper execution (ELF launcher needs real binary)
+		_, stderr, code := RunBinaryWithEnv(t, c.Env, "-C", c.Dir, "--cmd", "cat=false", "cat", "/etc/hostname")
+		if code == 0 {
+			t.Error("expected non-zero exit code when running blocked command")
+		}
+
+		AssertContains(t, stderr, "blocked")
+	})
+
+	t.Run("Raw_Command_Bypasses_Wrapper", func(t *testing.T) {
+		t.Parallel()
+		c := NewCLITester(t)
+
+		// Must use RunBinary for actual wrapper execution (ELF launcher needs real binary)
+		_, stderr, code := RunBinaryWithEnv(t, c.Env, "-C", c.Dir, "--cmd", "echo=false", "echo", "should be blocked")
+		if code == 0 {
+			t.Error("expected echo to be blocked with echo=false")
+		}
+
+		AssertContains(t, stderr, "blocked")
+
+		stdout, stderr, code := RunBinaryWithEnv(t, c.Env, "-C", c.Dir, "--cmd", "echo=true", "echo", "should work")
+		if code != 0 {
+			t.Errorf("expected exit code 0 with echo=true, got %d\nstderr: %s", code, stderr)
+		}
+
+		AssertContains(t, stdout, "should work")
+	})
+}
+
+// =============================================================================
+// Sandbox execution runtime tests (CLI-owned)
+// =============================================================================
+
+// waitForFile polls for the existence of a file, with timeout.
+// Used to synchronize with sandboxed scripts that signal readiness by creating a marker file.
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_, err := os.Stat(path)
+		if err == nil {
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timeout waiting for file %s", path)
+}
+
+func Test_Exec_Returns_ExitCode130_When_Signaled_Once(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	sigCh := make(chan os.Signal, 1)
+	marker := c.TempFile("ready")
+
+	// Create a script that signals readiness then waits.
+	c.WriteExecutable("trap_script.sh", fmt.Sprintf(`#!/bin/bash
+trap 'exit 0' SIGTERM
+touch %q
+while true; do sleep 1; done
+`, marker))
+
+	done := c.RunWithSignal(sigCh, "bash", "trap_script.sh")
+
+	waitForFile(t, marker, 5*time.Second)
+
+	sigCh <- syscall.SIGINT
+
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("expected exit code 130, got %d", code)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timeout waiting for command to terminate after signal")
+	}
+}
+
+func Test_Exec_Returns_ExitCode130_When_Signaled_Twice(t *testing.T) {
+	// Tests that a second signal triggers force kill.
+	// Note: bwrap typically exits immediately on SIGTERM, so the first signal
+	// usually causes termination before the second signal.
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	sigCh := make(chan os.Signal, 2)
+	marker := c.TempFile("ready")
+
+	c.WriteExecutable("test_script.sh", fmt.Sprintf(`#!/bin/bash
+touch %q
+while true; do sleep 1; done
+`, marker))
+
+	done := c.RunWithSignal(sigCh, "bash", "test_script.sh")
+
+	waitForFile(t, marker, 5*time.Second)
+
+	sigCh <- syscall.SIGINT
+
+	time.Sleep(100 * time.Millisecond)
+
+	sigCh <- syscall.SIGINT
+
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("expected exit code 130, got %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for termination after signals")
+	}
+}
+
+func Test_Exec_Returns_ExitCode130_When_Interrupted(t *testing.T) {
+	// Tests that the exit code is 130 when the sandboxed process is interrupted.
+	// Note: bwrap exits immediately on SIGTERM (doesn't forward to children).
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	sigCh := make(chan os.Signal, 1)
+	marker := c.TempFile("ready")
+
+	c.WriteExecutable("long_running.sh", fmt.Sprintf(`#!/bin/bash
+touch %q
+while true; do sleep 1; done
+`, marker))
+
+	done := c.RunWithSignal(sigCh, "bash", "long_running.sh")
+
+	waitForFile(t, marker, 5*time.Second)
+
+	sigCh <- syscall.SIGINT
+
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("expected exit code 130, got %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for process to terminate after signal")
+	}
+}
+
+func Test_Exec_Mounts_Self_Binary_When_Running_In_Sandbox(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	_, stderr, code := c.Run("test", "-f", sandboxBinaryPath)
+	if code != 0 {
+		t.Errorf("expected agent-sandbox binary to exist at %s inside sandbox\nstderr: %s", sandboxBinaryPath, stderr)
+	}
+
+	_, stderr, code = c.Run("test", "-x", sandboxBinaryPath)
+	if code != 0 {
+		t.Errorf("expected agent-sandbox binary to be executable at %s inside sandbox\nstderr: %s", sandboxBinaryPath, stderr)
+	}
+}
+
+func Test_Exec_Applies_CmdFlag_When_Running_Nested_Sandbox(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t) // Skip if already inside sandbox
+
+	c := NewCLITester(t)
+
+	_, stderr, code := RunBinaryWithEnv(t, c.Env,
+		"-C", c.Dir,
+		sandboxBinaryPath, "--cmd", "echo=false", "echo", "hi",
+	)
+
+	if code != 0 && (strings.Contains(stderr, "uid map") ||
+		strings.Contains(stderr, "ns failed") ||
+		strings.Contains(stderr, "user namespace") ||
+		strings.Contains(strings.ToLower(stderr), "operation not permitted")) {
+		t.Skip("nested namespaces not supported")
+	}
+
+	if code == 0 {
+		t.Error("expected echo to be blocked by nested --cmd rule")
+	}
+
+	AssertContains(t, strings.ToLower(stderr), "blocked")
+}
+
+func Test_Exec_Applies_Config_Commands_When_Running_Nested_Sandbox(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t) // Skip if already inside sandbox
+
+	c := NewCLITester(t)
+
+	nestedDir := filepath.Join(c.Dir, "nested")
+	mustMkdir(t, nestedDir)
+	mustWriteFile(t, filepath.Join(nestedDir, ".agent-sandbox.json"), `{
+		"commands": {
+			"echo": false
+		}
+	}`)
+
+	_, stderr, code := RunBinaryWithEnv(t, c.Env,
+		"-C", c.Dir,
+		sandboxBinaryPath, "-C", nestedDir, "echo", "hello",
+	)
+
+	if code != 0 && (strings.Contains(stderr, "uid map") ||
+		strings.Contains(stderr, "ns failed") ||
+		strings.Contains(stderr, "user namespace") ||
+		strings.Contains(strings.ToLower(stderr), "operation not permitted")) {
+		t.Skip("nested namespaces not supported")
+	}
+
+	if code == 0 {
+		t.Error("expected echo to be blocked by nested sandbox command rules, got exit code 0")
+	}
+
+	AssertContains(t, strings.ToLower(stderr), "blocked")
+}
+
+func Test_Exec_Allows_More_Restrictive_Filesystem_When_Running_Nested_Sandbox(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t) // Skip if already inside sandbox
+
+	c := NewCLITester(t)
+
+	tmpFile := c.TempFile("nested-test.txt")
+	c.WriteFile(filepath.Base(tmpFile), "original")
+
+	_, stderr, code := RunBinaryWithEnv(t, c.Env,
+		"-C", c.Dir,
+		sandboxBinaryPath, "--ro", c.Env["TMPDIR"], "-C", c.Env["TMPDIR"],
+		"touch", tmpFile,
+	)
+
+	if code == 0 {
+		t.Error("expected touch to fail on read-only path in nested sandbox")
+	}
+
+	AssertContains(t, strings.ToLower(stderr), "read-only")
 }

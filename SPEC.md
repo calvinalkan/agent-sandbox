@@ -13,47 +13,78 @@
 ### Command Structure
 
 ```
-agent-sandbox [global-flags] [exec-flags] <command> [command-args]
-agent-sandbox check [-q]
+agent-sandbox [flags] <command> [command-args]
 ```
 
-Global flags must appear before exec flags. Exec flags must appear before the command. The command receives all remaining arguments, including any flags (e.g., `npm install --save-dev`).
+Flags must appear before the command. The command receives all remaining arguments, including any flags (e.g., `npm install --save-dev`).
 
 Flag parsing stops at the first non-flag argument (the command).
 
 ---
 
-### Global Flags
+### Flags
 
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--cwd PATH` | `-C` | Run as if invoked from PATH |
-| `--config PATH` | `-c` | Use config file at PATH instead of project config |
-| `--help` | `-h` | Show help (context-sensitive) |
-| `--version` | `-v` | Show version and exit |
-
-The `-h` / `--help` flag may appear anywhere in the command line. When present, help is displayed and no action is taken.
-
----
-
-### Exec Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--network` | on | Network access (use `--network=false` to disable) |
-| `--docker` | off | Docker socket access |
-| `--dry-run` | off | Print bwrap command without executing |
-| `--debug` | off | Print sandbox startup details to stderr |
-| `--ro PATH` | | Add read-only path (repeatable) |
-| `--rw PATH` | | Add read-write path (repeatable) |
-| `--exclude PATH` | | Add excluded/hidden path (repeatable) |
-| `--cmd KEY=VALUE` | | Command wrapper override (repeatable) |
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--help` | `-h` | | Show help |
+| `--version` | `-v` | | Show version and exit |
+| `--check` | | | Check if running inside sandbox and exit |
+| `--cwd PATH` | `-C` | | Run as if invoked from PATH |
+| `--config PATH` | `-c` | | Use config file at PATH instead of project config |
+| `--network` | | on | Network access (use `--network=false` to disable) |
+| `--docker` | | off | Docker socket access |
+| `--dry-run` | | off | Print bwrap command without executing |
+| `--debug` | | off | Print sandbox startup details to stderr |
+| `--ro PATH` | | | Add read-only path (repeatable) |
+| `--rw PATH` | | | Add read-write path (repeatable) |
+| `--exclude PATH` | | | Add excluded/hidden path (repeatable) |
+| `--cmd KEY=VALUE` | | | Command wrapper override (repeatable) |
 
 Boolean flags use `--flag` for true, `--flag=false` or `--flag=0` for false.
 
 The `--cmd` flag can be repeated: `--cmd git=true --cmd rm=false` or comma-separated: `--cmd git=true,rm=false`.
 
 The `--ro`, `--rw`, and `--exclude` flags can be repeated: `--ro ~/secrets --rw ./output --exclude .env`
+
+The `-h` / `--help` flag is only handled by agent-sandbox before the sandboxed command name (while parsing flags). If `-h`/`--help` appears after the command name, it is passed through to the sandboxed command unchanged (it may be a valid flag for that tool).
+
+---
+
+### --check Flag
+
+The `--check` flag checks if the current process is running inside an agent-sandbox.
+
+**Output:**
+- Inside sandbox: prints `inside sandbox`
+- Outside sandbox: prints `outside sandbox`
+
+**Exit code:**
+- `0` = inside sandbox
+- `1` = outside sandbox
+
+The detection mechanism is tamperproof — it cannot be faked or disabled from inside the sandbox.
+
+---
+
+### Docker Socket Access
+
+`agent-sandbox` does not "unshare Docker" as a namespace. The `docker` setting controls whether the sandboxed process can reach the Docker daemon endpoint.
+
+`agent-sandbox` builds the sandbox filesystem by bind-mounting the host root as read-only (`--ro-bind / /`) and then overlaying specific mounts (including a fresh `/run` tmpfs via `--tmpfs /run`). This affects how Docker is exposed:
+
+- **Docker disabled (`--docker=false`, default):**
+  - The sandbox makes the Docker daemon unreachable.
+  - `agent-sandbox` masks the resolved Docker socket path by bind-mounting `/dev/null` over it (deterministic behavior, even if `/run` is a fresh tmpfs).
+
+- **Docker enabled (`--docker=true`):**
+  - The sandbox bind-mounts the Docker Unix socket into the sandbox so Docker clients can connect.
+  - Symlinks are resolved so paths like `/var/run/docker.sock` correctly map to the real socket location (often `/run/docker.sock`).
+
+**Socket path selection:**
+- If `DOCKER_HOST` is set to a Unix socket URL (e.g. `unix:///var/run/docker.sock`), that path is used.
+- Otherwise the default socket path is `/var/run/docker.sock`.
+
+Note: if Docker is configured to use a TCP endpoint (`DOCKER_HOST=tcp://...`), Docker access also depends on network namespace settings (`--network`).
 
 ---
 
@@ -72,30 +103,6 @@ This does not affect output from the sandboxed process itself.
 
 ---
 
-### Check Command
-
-```
-agent-sandbox check [-q]
-```
-
-Checks if the current process is running inside an agent-sandbox.
-
-| Flag | Description |
-|------|-------------|
-| `-q` | Quiet mode, no output |
-
-**Output (without -q):**
-- Inside sandbox: prints `inside sandbox`
-- Outside sandbox: prints `outside sandbox`
-
-**Exit code:**
-- `0` = inside sandbox
-- `1` = outside sandbox
-
-The detection mechanism is tamperproof — it cannot be faked or disabled from inside the sandbox.
-
----
-
 ### Exit Codes
 
 | Code | Meaning |
@@ -104,7 +111,7 @@ The detection mechanism is tamperproof — it cannot be faked or disabled from i
 | 1 | Error (check stderr for details) |
 | 130 | Interrupted (SIGINT/SIGTERM) |
 
-For `check` command: 0 = inside sandbox, 1 = outside sandbox.
+For `--check` flag: 0 = inside sandbox, 1 = outside sandbox.
 
 ---
 
@@ -189,6 +196,12 @@ Three access levels for paths:
 
 **Default:** `@all` preset is always applied. User config adds paths or removes presets with `!@preset`.
 
+**Missing path behavior:**
+- `filesystem.ro`/`rw`/`exclude` and `--ro`/`--rw`/`--exclude` ignore missing paths and globs that match nothing (best-effort).
+- Invalid glob patterns are errors.
+- The Go API provides strict policy mounts (`RO`, `RW`, `Exclude`) plus `ROTry`, `RWTry`, and `ExcludeTry`.
+- `ExcludeFile` and `ExcludeDir` force a specific file/dir mask even when missing (no glob patterns).
+
 ---
 
 ### Path Patterns
@@ -202,7 +215,7 @@ Three access levels for paths:
 - `~` at start expands to home directory
 - Absolute paths (`/`, `~`) resolve as-is
 - Relative paths resolve relative to effective pwd (respects `--cwd`)
-- Globs expand at sandbox startup to existing paths only
+- Globs expand at sandbox startup; patterns that match nothing are ignored for `filesystem.ro`/`rw`/`exclude` and `--ro`/`--rw`/`--exclude`
 
 **Glob support:**
 - `*` matches any characters within a single path segment (native Go `filepath.Glob`)
@@ -223,8 +236,8 @@ When multiple rules match a path, the most specific wins:
 
 1. **Exact path beats glob:** `~/.config/biome.json` beats `~/.config/*`
 2. **Longer path beats shorter:** `~/.config/nvim` beats `~/.config`
-3. **Same specificity, access level:** `exclude` > `ro` > `rw` (most restrictive wins)
-4. **Same specificity, different config layer:** Later layer wins (CLI > project > global > preset)
+3. **Same specificity, different config layer:** Later layer wins (CLI > project > global > preset)
+4. **Same specificity, within the same layer:** `exclude` > `ro` > `rw` (most restrictive wins)
 
 ---
 
@@ -247,14 +260,16 @@ Presets are built-in named configurations for filesystem access. Users cannot de
 
 | Preset | Description |
 |--------|-------------|
-| `@base` | Core sandbox: working directory writable, home protected (new files allowed, existing protected), temp writable, agent configs writable, secrets excluded (~/.ssh, ~/.gnupg, ~/.aws), sandbox config protected |
+| `@base` | Core sandbox: working directory writable, home directory read-only, temp writable, secrets excluded (~/.ssh, ~/.gnupg, ~/.aws), sandbox config protected |
 | `@caches` | Build tool caches writable (~/.cache, ~/.bun, ~/go, ~/.npm, ~/.cargo) |
+| `@agents` | AI coding agent configs writable (~/.codex, ~/.claude, ~/.claude.json, ~/.pi) |
 | `@git` | Git hooks and config protected (.git/hooks, .git/config), with automatic worktree support |
+| `@git-strict` | Git metadata protected more aggressively: tags and non-current branch refs are read-only (current branch remains writable); supports worktrees |
 | `@lint/ts` | TypeScript/JavaScript lint configs protected (biome, eslint, prettier, tsconfig) |
 | `@lint/go` | Go lint configs protected (golangci) |
 | `@lint/python` | Python lint configs protected (ruff, flake8, mypy, pylint, pyproject.toml) |
 | `@lint/all` | All lint presets combined |
-| `@all` | Everything: @base, @caches, @git, @lint/all |
+| `@all` | Everything: @base, @caches, @agents, @git, @lint/all |
 
 ---
 
@@ -326,9 +341,32 @@ The wrapper properly parses git's global flags (e.g., `-C`, `--no-pager`) to cor
 
 When blocked, prints a guidance message to stderr and exits with error.
 
-**Wrapper mechanism:** All paths to the binary are discovered (e.g., `/usr/bin/git`, `/bin/git`, `/usr/local/bin/git`) and symlinks resolved. For blocking (`false`), a blocker is mounted over all locations. For wrapping (`@preset` or custom), the real binary is mounted to a randomized hidden path, and the wrapper is overlaid at all locations. This prevents trivial bypasses via alternate paths.
+**Temp directory exception:** If the current working directory is inside the system temp directory (for example `/tmp`), the git wrapper does not block operations. This is intended for tests and throwaway repos.
 
-**Custom wrapper scripts:** When you need custom logic, write a wrapper script. The script receives the original arguments and should `exec` the real command (available at `$AGENT_SANDBOX_<CMD>`) when allowed.
+**Wrapper mechanism:** All paths to the binary are discovered (e.g., `/usr/bin/git`, `/bin/git`, `/usr/local/bin/git`) and symlinks resolved. For blocking (`false`), a blocker is mounted over all locations. For presets and custom wrappers, the real binary is mounted at `/run/agent-sandbox/bin/<cmd>` and wrapper logic is driven by sandbox-internal files (`/run/agent-sandbox/policies/<cmd>` for scripts, `/run/agent-sandbox/presets/<cmd>` for presets). Discovered target paths are then replaced with a launcher that dispatches to the right policy/preset.
+
+**Binary/command bypass (obfuscation only):**
+- A process inside the sandbox can often discover wrapper mounts by inspecting `/proc/self/mountinfo`.
+- The "real" tool binary is mounted at `/run/agent-sandbox/bin/<cmd>` (not on PATH). If a process knows that path, it can execute the real tool directly and bypass wrapper/preset logic.
+- To reduce trivial discovery (but not eliminate it), agent-sandbox:
+  - uses an ELF launcher at wrapped target paths (so `cat $(command -v git)` doesn't trivially reveal a shell shim), and
+  - makes `/run/agent-sandbox/{bin,policies,presets}` search-only (mode `0111`) so directory listing like `ls /run/agent-sandbox/bin` fails.
+
+These measures are deterrence only. Filesystem rules (`ro`, `rw`, `exclude`) are the enforcement boundary.
+
+**Why a launcher binary instead of mounting scripts directly?**
+
+If wrapper scripts were mounted directly over command paths (e.g., a bash script at `/usr/bin/git`), a user could simply `cat /usr/bin/git` and read the script source, which would reveal the real binary location (`/run/agent-sandbox/bin/git`). They could then call the real binary directly, bypassing the wrapper entirely.
+
+By using a compiled launcher binary:
+1. `cat /usr/bin/git` shows binary data, not readable script with paths
+2. The launcher contains dispatch logic in compiled form - not human-readable
+3. Combined with `0111` directory permissions, users cannot easily discover what commands are wrapped or where real binaries are mounted
+4. Additionally, using a compiled launcher allows wrapper logic (like the `@git` preset) to be implemented in Go rather than bash, which is faster and allows for more sophisticated argument parsing
+
+A determined user can still discover wrapped binaries via `/proc/self/mountinfo` or by guessing paths. The launcher approach raises the barrier but does not eliminate bypass entirely. The ultimate enforcement is always the filesystem permissions - even if a wrapper is bypassed, `ro`/`rw`/`exclude` rules cannot be circumvented.
+
+**Custom wrapper scripts:** When you need custom logic, write a wrapper script. The script receives the original tool arguments unchanged. The real binary is available via `$AGENT_SANDBOX_REAL` and the wrapped command name via `$AGENT_SANDBOX_CMD`.
 
 Example - blocking npm publish commands:
 
@@ -341,7 +379,8 @@ case "$1" in
     exit 1
     ;;
 esac
-exec "$AGENT_SANDBOX_NPM" "$@"
+
+exec "$AGENT_SANDBOX_REAL" "$@"
 ```
 
 `~/.config/agent-sandbox/config.json`:
@@ -374,6 +413,52 @@ exec "$AGENT_SANDBOX_NPM" "$@"
 
 ---
 
+### Nested Sandboxes
+
+Running `agent-sandbox` inside an existing sandbox (nested sandbox) works, but with specific constraints:
+
+**Filesystem permissions can only be made MORE restrictive:**
+- Outer: `rw` → Inner: `ro` ✅ (locks down further)
+- Outer: `ro` → Inner: `rw` ❌ (inner cannot escalate, remains `ro`)
+- Outer: `exclude` → Inner: anything ❌ (path is already hidden)
+
+This is enforced by the kernel — the inner sandbox cannot escape the outer's restrictions.
+
+**Network can only be disabled, not re-enabled:**
+- Outer: enabled → Inner: disabled ✅
+- Outer: disabled → Inner: enabled ❌ (inner cannot escape network namespace)
+
+**Command wrappers can only be made MORE restrictive:**
+
+- Outer: raw → Inner: `false` / `@git` / script ✅ (locks down further)
+- Outer: wrapped/preset/blocked → Inner: raw ❌ (inner cannot override outer wrappers)
+- `--cmd` CLI flag: allowed inside a sandbox, but only applies to commands that are not already wrapped by the outer sandbox
+
+Note: the agent-sandbox binary may be renamed on the host. Inside the sandbox, multicall dispatch is triggered by policy/preset marker files rather than the executable name, so renamed binaries still behave like the normal CLI.
+
+When running inside a sandbox, command rules from config files and `--cmd` are applied only for commands that are not already wrapped by the outer sandbox. This lets nested sandboxes lock down additional tools without weakening the outer sandbox policy.
+
+Implementation detail: inner sandboxes mount the outer runtime at `/run/agent-sandbox/outer`, and the multicall launcher searches:
+1. `/run/agent-sandbox/...` (inner)
+2. `/run/agent-sandbox/outer/...` (outer)
+
+**Workaround for dynamic behavior:**
+
+If you need inner sandbox behavior to vary based on outer sandbox state, use a custom wrapper script that checks filesystem state:
+
+```bash
+#!/bin/bash
+# Check if a marker file is read-only (outer sandbox locked it down)
+if ! touch /tmp/.sandbox-marker 2>/dev/null; then
+  echo "Running in restricted mode" >&2
+  # Apply stricter rules
+fi
+
+exec "$AGENT_SANDBOX_REAL" "$@"
+```
+
+---
+
 ### Hardcoded Behavior
 
 These cannot be changed by configuration:
@@ -382,10 +467,10 @@ These cannot be changed by configuration:
 |------|----------|
 | `/dev` | Virtual device mount (required for programs) |
 | `/proc` | Virtual proc mount (required for programs) |
-| Sandbox detection | Tamperproof mechanism for `agent-sandbox check` (cannot be faked or disabled from inside) |
+| Sandbox detection | Tamperproof mechanism for `--check` (cannot be faked or disabled from inside) |
 | Symlink resolution | Paths are resolved before mounting |
 | Docker socket resolution | Symlinks auto-resolved when `--docker` enabled |
-| Nested sandboxes | Running `agent-sandbox` inside a sandbox works without special handling |
+| Nested sandboxes | Running `agent-sandbox` inside a sandbox works (see Nested Sandboxes section) |
 
 ---
 
@@ -402,7 +487,7 @@ All environment variables from the parent process are passed through to the sand
 | `ro` paths | Cannot be modified, deleted, or overwritten |
 | `exclude` paths | Cannot be read, listed, or detected |
 | Config files | `.agent-sandbox.json`/`.jsonc` and global config are read-only inside sandbox |
-| Sandbox detection | `agent-sandbox check` result cannot be faked from inside |
+| Sandbox detection | `--check` result cannot be faked from inside |
 | Blocked commands | Cannot execute when wrapper set to `false` or operation forbidden |
 | Network (disabled) | No network access when `--network=false` |
 | Root filesystem | Read-only by default |
@@ -416,13 +501,15 @@ All environment variables from the parent process are passed through to the sand
 | Invalid JSON/JSONC config | Error, exit |
 | Both .json and .jsonc exist at same location | Error, exit |
 | Unknown preset referenced | Error, exit |
-| Path doesn't exist (non-glob) | Skip silently (may exist in other projects) |
-| Glob matches nothing | Skip silently (pattern may be valid for other projects) |
+| Invalid glob pattern | Error, exit |
+| Path doesn't exist (`filesystem.ro/rw/exclude`, `--ro/--rw/--exclude`) | Skip silently |
+| Glob matches nothing (`filesystem.ro/rw/exclude`, `--ro/--rw/--exclude`) | Skip silently |
 | Running as root | Error, refuse to run |
 | Home directory not found (with @base) | Error, exit |
 | $PWD inside excluded path | Error, exit |
 | Not on Linux | Error, exit |
 | bwrap not installed | Error, exit |
+| `--cmd` flag used inside sandbox | Allowed, but only applies to commands not already wrapped by outer sandbox |
 
 ---
 
@@ -455,7 +542,7 @@ agent-sandbox --dry-run npm install
 
 **Check if sandboxed:**
 ```bash
-if agent-sandbox check -q; then
+if agent-sandbox --check; then
   echo "inside sandbox"
 fi
 ```

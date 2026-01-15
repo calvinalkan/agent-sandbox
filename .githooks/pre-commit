@@ -2,8 +2,6 @@
 
 set -e
 
-make modernize
-
 if agent-sandbox check -q; then
     make check
 fi

@@ -184,96 +184,91 @@ do not ever add code just for the purpose of easy unit tests. ever.
 
 ## Check Command Implementation
 
-Mount agent-sandbox itself into the sandbox:
-1. Use `os.Executable()` to find our own binary
-2. Mount it into the sandbox (e.g., `/usr/bin/agent-sandbox`) with `--ro-bind`
+Sandbox detection is based on a deterministic, read-only mount:
+1. The sandbox always ensures `/run/agent-sandbox` exists inside the sandbox.
+2. The `agent-sandbox` binary is mounted read-only at `/run/agent-sandbox/agent-sandbox`.
+3. The `check` command returns "inside sandbox" iff that path exists.
 
-Tamperproof detection via marker file:
-1. Mount a read-only marker file at a known path (e.g., `/.agent-sandbox`)
-2. `check` command simply tests if the marker exists
-
-Since agent-sandbox is a compiled Go binary, it can be mounted read-only (or execute-only if bwrap supports it). The marker file cannot be created or removed from inside the sandbox.
+This is tamper-resistant: processes inside the sandbox cannot create or remove that mount.
 
 ---
 
 ## Command Wrapper Implementation
 
+Wrappers are implemented by overlaying resolved executable target paths (found by
+searching PATH and resolving symlinks). Depending on configuration, each target
+is replaced with either:
+- a small `--ro-bind-data` shell shim (fallback), or
+- an ELF multicall launcher binary via `--ro-bind` (preferred when
+  `CommandLauncherBinary` is set).
+
+Policy and preset metadata is materialized under `/run/agent-sandbox` using
+`--ro-bind-data` (script/marker content is provided via an inherited FD, typically
+backed by memfd).
+
 **Directory structure** inside the sandbox:
 ```
-/usr/bin/agent-sandbox              # agent-sandbox binary (for check, recursive calls)
+/run/agent-sandbox/
+├── agent-sandbox                  # mounted agent-sandbox binary (for check + launcher)
+├── bin/
+│   └── <cmd>                      # real binary (only mounted when needed)
+├── policies/
+│   └── <cmd>                      # deny/custom wrapper scripts
+└── presets/
+    └── <cmd>                      # marker files for built-in presets
 
-/run/<random>/agent-sandbox/
-├── binaries/
-│   ├── wrap-binary                 # agent-sandbox binary
-│   └── real/
-│       ├── git                     # real git binary
-│       └── npm                     # real npm binary
-└── wrappers/
-    ├── git                         # bash: exec .../wrap-binary git "$@"
-    ├── npm                         # bash: exec .../wrap-binary npm "$@"
-    └── rm                          # bash: echo "rm blocked"; exit 1
-
-/usr/bin/git                        # bind mount of .../wrappers/git
-/usr/bin/npm                        # bind mount of .../wrappers/npm
-/usr/bin/rm                         # bind mount of .../wrappers/rm
+/usr/bin/git (and other resolved paths)  # replaced by per-path shim or launcher
 ```
+
+Note: `/run/agent-sandbox` and its subdirectories (`bin`, `policies`, `presets`) are set to mode `0111` (search-only) so directory listing like `ls /run/agent-sandbox/bin` fails. This is a deterrence measure only; mounts can still be inspected via `/proc/self/mountinfo`.
 
 **How it works:**
-1. Find all paths to each wrapped binary (`/usr/bin/git`, `/bin/git`, symlinks resolved)
-2. Mount real binary to `/run/<random>/agent-sandbox/binaries/real/<name>`
-3. Generate wrapper scripts in `/run/<random>/agent-sandbox/wrappers/`
-4. Bind mount wrapper scripts over ALL original binary locations
+1. Discover all executable targets for each configured command by searching PATH
+   (symlinks resolved and deduplicated by resolved target).
+2. For `false` (deny): create a deny policy at `/run/agent-sandbox/policies/<cmd>`
+   and replace every discovered target with the launcher/shim.
+3. For script wrappers:
+   - Mount the wrapper script at `/run/agent-sandbox/policies/<cmd>`.
+   - If the wrapper needs the real binary, also mount the real binary at
+     `/run/agent-sandbox/bin/<cmd>`.
+   - Replace every discovered target with the launcher/shim.
+4. For presets:
+   - Create a marker at `/run/agent-sandbox/presets/<cmd>` and mount the real
+     binary at `/run/agent-sandbox/bin/<cmd>`.
+   - Replace every discovered target with the launcher/shim.
 
-**The `wrap-binary` command:**
-- Not shown in `--help`
-- Errors if not inside sandbox (marker file missing)
-- Uses `os.Executable()` to find its own path, then locates real binary at `../real/<name>`
-- No config file needed at runtime - just path convention
-
-**One hidden command** (not in `--help`, only works inside sandbox):
-
-| Command | Purpose |
-|---------|---------|
-| `wrap-binary <cmd> [args...]` | Presets: apply rules, exec real binary. Custom: set env var, exec user's script |
-
-**Wrapper scripts:**
-```bash
-# deny-binary - single static script, uses $0 for command name:
-#!/bin/bash
-echo "command '$(basename $0)' is blocked in this sandbox" >&2
-exit 1
-
-# For preset (@git) or custom script:
-exec agent-sandbox wrap-binary git "$@"
-```
-
-For blocked commands, mount `deny-binary` directly at all binary paths (e.g., `/usr/bin/rm`). One script, reused everywhere.
-
-**Script generation:**
-1. Create temp dir on host (`/tmp/<random>/`)
-2. Write `deny-binary` script (static)
-3. Write `wrap-<cmd>` scripts (one per preset/custom command)
-4. Start bwrap with mounts
-5. Wait for bwrap to exit
-6. Delete temp dir
+**The `multicall` dispatcher:**
+- Hidden (not shown in `--help`) and only works inside the sandbox.
+- Invoked either explicitly as `agent-sandbox multicall <cmd> ...` (shim mode) or
+  implicitly when the launcher is executed via a wrapped path like `/usr/bin/git`
+  (argv0-based dispatch).
+- Dispatch order:
+  1. If `/run/agent-sandbox/policies/<cmd>` exists, execute it and set:
+     - `AGENT_SANDBOX_CMD=<cmd>`
+     - `AGENT_SANDBOX_REAL=/run/agent-sandbox/bin/<cmd>` (if present, else empty)
+  2. Otherwise, if `/run/agent-sandbox/presets/<cmd>` exists, run the built-in
+     preset (currently only `git`).
 
 **Custom wrapper scripts:**
-- `wrap-binary` sets `AGENT_SANDBOX_<NAME>` env var pointing to real binary
-- Example: `AGENT_SANDBOX_NPM=/run/<random>/.../real/npm`
-- Then execs user's script via Go's exec (with env var set)
-- User's script uses the env var to call real binary:
+- Receive the original tool arguments unchanged.
+- Use `$AGENT_SANDBOX_REAL` to invoke the real tool.
+
+Example (block npm publish):
 ```bash
-#!/bin/bash
+#!/bin/sh
 case "$1" in
-  publish|unpublish) echo "blocked" >&2; exit 1 ;;
+  publish|unpublish|deprecate)
+    echo "blocked" >&2
+    exit 1
+    ;;
 esac
-exec "$AGENT_SANDBOX_NPM" "$@"
+exec "$AGENT_SANDBOX_REAL" "$@"
 ```
 
 **Presets:**
-- Built-in presets are Go implementations that understand tool-specific argument grammar
-- For now, only `@git` is implemented - more presets can be added later
-- No user-defined argument matching - too error-prone across different CLI conventions
+- Built-in presets are implemented in the `multicall` dispatcher (Go code) and enabled via marker files under `/run/agent-sandbox/presets`.
+- Currently only `@git` is implemented.
+- No user-defined argument matching DSL (too fragile across CLIs).
 
 ---
 

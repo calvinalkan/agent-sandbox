@@ -2,377 +2,397 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"syscall"
 
-	flag "github.com/spf13/pflag"
+	"github.com/calvinalkan/agent-sandbox/sandbox"
 )
 
-// Static errors for platform prerequisites.
-var (
-	// ErrNoCommand is returned when exec is called without a command.
-	ErrNoCommand = errors.New("no command specified (usage: agent-sandbox <command> [args])")
-	// ErrNotLinux is returned when running on a non-Linux platform.
-	ErrNotLinux = errors.New("agent-sandbox requires Linux (bwrap uses Linux namespaces)")
-	// ErrRunningAsRoot is returned when running as root user.
-	ErrRunningAsRoot = errors.New("agent-sandbox cannot run as root (use a regular user account)")
-	// ErrBwrapNotFound is returned when bwrap is not in PATH.
-	ErrBwrapNotFound = errors.New("bwrap not found in PATH (try installing with: sudo apt install bubblewrap)")
-	// ErrInvalidCmdFlag is returned when a --cmd flag value is malformed.
-	ErrInvalidCmdFlag = errors.New("invalid --cmd format: expected KEY=VALUE")
-	// ErrHomeNotFound is returned when the home directory cannot be determined.
-	ErrHomeNotFound = errors.New("cannot determine home directory")
-	// ErrHomeNotDir is returned when HOME points to a file instead of a directory.
-	ErrHomeNotDir = errors.New("home directory is not a directory")
+const (
+	agentSandboxRuntimeRoot        = "/run/agent-sandbox"
+	errNoCommandMessage            = "no command specified (usage: agent-sandbox <command> [args])"
+	errNotLinuxMessage             = "agent-sandbox requires Linux (bwrap uses Linux namespaces)"
+	errRunningAsRootMessage        = "agent-sandbox cannot run as root (use a regular user account)"
+	errBwrapNotFoundMessage        = "bwrap not found in PATH (try installing with: sudo apt install bubblewrap)"
+	errInvalidCommandPresetMessage = "command preset can only be used for its matching command"
 )
 
-// ExecCmd creates the exec command for running commands in the sandbox.
-func ExecCmd(cfg *Config, env map[string]string) *Command {
-	flags := flag.NewFlagSet("exec", flag.ContinueOnError)
-	flags.SetInterspersed(false) // Stop parsing at command
-	flags.BoolP("help", "h", false, "Show help")
-	flags.Bool("network", true, "Enable network access")
-	flags.Bool("docker", false, "Enable docker socket access")
-	flags.Bool("dry-run", false, "Print bwrap command without executing")
-	flags.Bool("debug", false, "Print sandbox startup details to stderr")
-	flags.StringArray("ro", nil, "Add read-only path")
-	flags.StringArray("rw", nil, "Add read-write path")
-	flags.StringArray("exclude", nil, "Add excluded path")
-	flags.StringArray("cmd", nil, "Command wrapper override (KEY=VALUE, repeatable)")
+// sandboxBinaryPath is where the agent-sandbox binary is mounted inside the sandbox.
+//
+// This path lives under the sandbox's /run tmpfs, so its presence is a reliable
+// indicator that we're running inside an agent-sandbox-created sandbox.
+var sandboxBinaryPath = filepath.Join(agentSandboxRuntimeRoot, "agent-sandbox")
 
-	return &Command{
-		Flags:   flags,
-		Usage:   "exec [flags] <command> [args]",
-		Short:   "Run command in sandbox",
-		Long:    "Run a command inside the bubblewrap sandbox with configured filesystem access.",
-		Aliases: []string{},
-		Exec: func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) error {
-			// Create debug logger (nil output means disabled)
-			debugEnabled, _ := flags.GetBool("debug")
+// killCtxKey is the context key for the force-kill context.
+type killCtxKey struct{}
 
-			var debug *DebugLogger
-			if debugEnabled {
-				debug = NewDebugLogger(stderr)
-			} else {
-				debug = NewDebugLogger(nil)
-			}
+// WithKillContext returns a context that carries a separate "kill context".
+// When the kill context is cancelled, the sandboxed process should be sent SIGKILL.
+// This enables two-stage shutdown: cancel the main context for SIGTERM,
+// then cancel the kill context for SIGKILL.
+func WithKillContext(ctx context.Context, killCtx context.Context) context.Context {
+	return context.WithValue(ctx, killCtxKey{}, killCtx)
+}
 
-			// 1. Platform validation
-			err := checkPlatformPrerequisites()
-			if err != nil {
-				return err
-			}
+// getKillContext retrieves the kill context from context.
+// Returns a never-cancelled context if not set.
+func getKillContext(ctx context.Context) context.Context {
+	killCtx, ok := ctx.Value(killCtxKey{}).(context.Context)
+	if !ok {
+		return context.Background()
+	}
 
-			// 2. Validate home directory early (before any path resolution)
-			// This is required because @base and many presets reference home paths
-			homeDir, err := GetHomeDir(env)
-			if err != nil {
-				return err
-			}
+	return killCtx
+}
 
-			// 3. Validate command exists
-			if len(args) == 0 {
-				return ErrNoCommand
-			}
+func newSandbox(cfg *Config, env sandbox.Environment, debug *DebugLogger) (*sandbox.Sandbox, error) {
+	if cfg == nil {
+		return nil, errors.New("nil config")
+	}
 
-			// 4. Output config loading debug info
-			if cfg != nil {
-				debugConfigLoading(debug, cfg)
-			}
+	selfBinary, err := getSelfBinary()
+	if err != nil {
+		return nil, err
+	}
 
-			// 5. Apply CLI flags to config (highest priority)
-			if cfg != nil {
-				err = applyExecFlags(cfg, flags)
-				if err != nil {
-					return err
-				}
+	mounts := make([]sandbox.Mount, 0, 32)
 
-				// Output config merge debug info (after CLI flags applied)
-				debugConfigMerge(debug, cfg, flags)
-			}
+	// Filesystem policy mounts in precedence order.
+	//
+	// We intentionally keep global/project config filesystem paths separate so that
+	// later config layers reliably override earlier ones, even when access levels
+	// differ (e.g. global "rw" vs project "ro").
+	mounts = append(mounts, mountsFromConfig(&cfg.GlobalFilesystem)...)
+	mounts = append(mounts, mountsFromConfig(&cfg.ProjectFilesystem)...)
+	mounts = append(mounts, mountsFromConfig(&cfg.CLIFilesystem)...)
 
-			// 6. Get loaded config paths for @base preset protection
-			loadedConfigPaths := getLoadedConfigPaths(cfg)
+	for _, p := range getLoadedConfigPaths(cfg) {
+		mounts = append(mounts, sandbox.ROTry(p))
+	}
 
-			// 7. Expand presets with context
-			presetCtx := PresetContext{
-				HomeDir:           homeDir,
-				WorkDir:           cfg.EffectiveCwd,
-				LoadedConfigPaths: loadedConfigPaths,
-			}
+	// Protect project config files from modification by sandboxed processes.
+	//
+	// These live under the (typically RW) workdir mount, so they must be
+	// re-mounted read-only explicitly.
+	mounts = append(mounts,
+		sandbox.ROTry(filepath.Join(env.WorkDir, ".agent-sandbox.json")),
+		sandbox.ROTry(filepath.Join(env.WorkDir, ".agent-sandbox.jsonc")),
+	)
 
-			presetPaths, err := ExpandPresets(cfg.Filesystem.Presets, presetCtx)
-			if err != nil {
-				return err
-			}
+	runtimeRoot := filepath.Dir(sandboxBinaryPath)
 
-			// Debug: show preset expansion
-			DebugPresetExpansion(debug, cfg.Filesystem.Presets, getAppliedPresets(cfg.Filesystem.Presets), getRemovedPresets(cfg.Filesystem.Presets))
+	// Always mount the agent-sandbox binary at the deterministic runtime path.
+	// This enables sandbox detection and provides the multicall launcher.
+	mounts = append(mounts,
+		sandbox.Dir(runtimeRoot, 0o111),
+		sandbox.RoBind(selfBinary, sandboxBinaryPath),
+	)
 
-			// 8. Resolve all paths from all layers
-			resolvedPaths, err := ResolvePaths(&ResolvePathsInput{
-				Preset:  PathLayerInput(presetPaths),
-				Global:  PathLayerInput{}, // global config paths are included in merged cfg.Filesystem
-				Project: PathLayerInput{}, // project config paths are included in merged cfg.Filesystem
-				CLI: PathLayerInput{
-					Ro:      cfg.Filesystem.Ro,
-					Rw:      cfg.Filesystem.Rw,
-					Exclude: cfg.Filesystem.Exclude,
-				},
-				HomeDir: homeDir,
-				WorkDir: cfg.EffectiveCwd,
-			})
-			if err != nil {
-				return err
-			}
+	// Nested sandbox support: the inner sandbox mounts a fresh /run tmpfs, which
+	// would otherwise hide the outer sandbox runtime (policies/real bins).
+	// Mount the outer runtime under /run/agent-sandbox/outer and let the launcher
+	// fall back to it when no inner policy exists.
+	if isInsideSandbox() {
+		outerRuntime := filepath.Join(runtimeRoot, "outer")
+		mounts = append(mounts,
+			sandbox.Dir(outerRuntime),
+			sandbox.RoBindTry(runtimeRoot, outerRuntime),
+		)
+	}
 
-			// Debug: show path resolution results
-			DebugPathResolution(debug, resolvedPaths)
+	block, wrappers, err := buildSandboxCommandRules(cfg.Commands)
+	if err != nil {
+		return nil, err
+	}
 
-			// 9. Validate working directory is not excluded
-			err = ValidateWorkDirNotExcluded(resolvedPaths, cfg.EffectiveCwd)
-			if err != nil {
-				return err
-			}
-
-			// 10. Apply specificity rules and sort by mount order
-			sortedPaths := ResolveAndSort(resolvedPaths)
-
-			// 11. Set up temp directory for exclude mounts and wrappers
-			tempRes, err := SetupTempDir()
-			if err != nil {
-				return err
-			}
-			defer tempRes.Cleanup()
-
-			// 12. Generate bwrap arguments for filesystem mounts
-			bwrapArgs, err := BwrapArgs(sortedPaths, cfg)
-			if err != nil {
-				return err
-			}
-
-			// 13. Add exclude path mounts
-			excludeArgs := GenerateExcludeMounts(sortedPaths, tempRes.EmptyFile)
-			bwrapArgs = append(bwrapArgs, excludeArgs...)
-
-			// 14. Set up command wrappers
-			// Debug: show command wrapper configuration
-			DebugCommandWrappers(debug, cfg.Commands)
-
-			// Find binary locations for wrapped commands
-			binPaths := make(map[string][]BinaryPath)
-			for cmdName := range cfg.Commands {
-				binPaths[cmdName] = BinaryLocations(cmdName, env)
-			}
-
-			// Generate random runtime base path for sandbox
-			runtimeBase := "/run/" + randomString8() + "/agent-sandbox"
-			sandboxWrapBinaryPath := filepath.Join(runtimeBase, "binaries", "wrap-binary")
-
-			// Generate wrapper scripts
-			wrapperSetup, err := GenerateWrappers(cfg.Commands, binPaths, sandboxWrapBinaryPath)
-			if err != nil {
-				return err
-			}
-
-			if wrapperSetup != nil {
-				defer wrapperSetup.Cleanup()
-			}
-
-			// 15. Get self binary path for mounting into sandbox
-			selfBinary, err := getSelfBinaryPath()
-			if err != nil {
-				return err
-			}
-
-			// 16. Add wrapper mounts to bwrap args
-			bwrapArgs = AddWrapperMounts(bwrapArgs, wrapperSetup, selfBinary, runtimeBase)
-
-			// Debug: show final bwrap arguments
-			DebugBwrapArgs(debug, bwrapArgs)
-
-			// 17. Check for dry-run mode
-			dryRun, _ := flags.GetBool("dry-run")
-			if dryRun {
-				printDryRunOutput(stdout, bwrapArgs, args)
-
-				return nil
-			}
-
-			// 18. Execute the command in the sandbox
-			exitCode, err := ExecuteSandbox(ctx, bwrapArgs, args, env, stdin, stdout, stderr)
-			if err != nil {
-				return err
-			}
-
-			return NewExitCodeError(exitCode)
+	sbCfg := sandbox.Config{
+		Network: cfg.Network,
+		Docker:  cfg.Docker,
+		TempDir: os.TempDir(),
+		Filesystem: sandbox.Filesystem{
+			Presets: effectivePresetsForCLI(cfg.Filesystem.Presets),
+			Mounts:  mounts,
+		},
+		Commands: sandbox.Commands{
+			Block:     block,
+			Wrappers:  wrappers,
+			Launcher:  selfBinary,
+			MountPath: agentSandboxRuntimeRoot,
 		},
 	}
+
+	if debug != nil && debug.Enabled() {
+		sbCfg.Debugf = func(format string, args ...any) {
+			debug.Logf(format, args...)
+		}
+	}
+
+	sb, err := sandbox.NewWithEnvironment(&sbCfg, env)
+	if err != nil {
+		return nil, fmt.Errorf("create sandbox: %w", err)
+	}
+
+	return sb, nil
 }
 
-// applyExecFlags applies CLI flag overrides to the config.
-// Only flags that were explicitly set override config values.
-func applyExecFlags(cfg *Config, flags *flag.FlagSet) error {
-	if flags.Changed("network") {
-		val, _ := flags.GetBool("network")
-		cfg.Network = &val
+func effectivePresetsForCLI(presets []string) []string {
+	// CLI semantics: @all is the default baseline and user-provided presets are
+	// modifications unless the user explicitly controls @all.
+	if len(presets) == 0 {
+		return nil
 	}
 
-	if flags.Changed("docker") {
-		val, _ := flags.GetBool("docker")
-		cfg.Docker = &val
+	for _, raw := range presets {
+		p := strings.TrimSpace(raw)
+		if p == "@all" || p == "!@all" {
+			return presets
+		}
 	}
 
-	// Append CLI paths to config paths
-	if flags.Changed("ro") {
-		vals, _ := flags.GetStringArray("ro")
-		cfg.Filesystem.Ro = append(cfg.Filesystem.Ro, vals...)
+	return append([]string{"@all"}, presets...)
+}
+
+func mountsFromConfig(fs *FilesystemConfig) []sandbox.Mount {
+	out := make([]sandbox.Mount, 0, len(fs.Ro)+len(fs.Rw)+len(fs.Exclude))
+
+	// CLI config and flags historically tolerated missing paths. Keep that behavior
+	// by using the *Try variants, and rely on explicit strict mounts in presets.
+	//
+	// Ordering matters: the sandbox planner resolves conflicts for the same host
+	// path by "last one wins". Within a single config layer we therefore emit
+	// mounts from least to most restrictive so that:
+	//   exclude > ro > rw.
+	for _, p := range fs.Rw {
+		out = append(out, sandbox.RWTry(p))
 	}
 
-	if flags.Changed("rw") {
-		vals, _ := flags.GetStringArray("rw")
-		cfg.Filesystem.Rw = append(cfg.Filesystem.Rw, vals...)
+	for _, p := range fs.Ro {
+		out = append(out, sandbox.ROTry(p))
 	}
 
-	if flags.Changed("exclude") {
-		vals, _ := flags.GetStringArray("exclude")
-		cfg.Filesystem.Exclude = append(cfg.Filesystem.Exclude, vals...)
+	for _, p := range fs.Exclude {
+		out = append(out, sandbox.ExcludeTry(p))
 	}
 
-	// Parse and apply --cmd flags
-	if flags.Changed("cmd") {
-		vals, _ := flags.GetStringArray("cmd")
+	return out
+}
 
-		err := applyCmdFlags(cfg, vals)
-		if err != nil {
-			return err
+func buildSandboxCommandRules(commands map[string]CommandRule) ([]string, map[string]sandbox.Wrapper, error) {
+	if len(commands) == 0 {
+		return nil, nil, nil
+	}
+
+	var block []string
+
+	wrappers := make(map[string]sandbox.Wrapper)
+
+	for cmdName, rule := range commands {
+		switch rule.Kind {
+		case CommandRuleExplicitAllow:
+			continue
+		case CommandRuleBlock:
+			block = append(block, cmdName)
+		case CommandRuleScript:
+			wrappers[cmdName] = sandbox.Wrap(rule.Value)
+		case CommandRulePreset:
+			switch rule.Value {
+			case "@git":
+				// Use inline script with special content the launcher recognizes as preset
+				wrappers[cmdName] = sandbox.Wrapper{InlineScript: "preset:git\n"}
+			default:
+				return nil, nil, fmt.Errorf("unknown command preset: %s", rule.Value)
+			}
+		default:
+			return nil, nil, fmt.Errorf("unknown command rule kind: %v", rule.Kind)
+		}
+	}
+
+	if len(block) == 0 {
+		block = nil
+	}
+
+	if len(wrappers) == 0 {
+		wrappers = nil
+	}
+
+	return block, wrappers, nil
+}
+
+func bwrapArgsFromCmd(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+
+	args = args[1:]
+	for i, a := range args {
+		if a == "--" {
+			return args[:i]
+		}
+	}
+
+	return args
+}
+
+func runSandboxedCommand(ctx context.Context, cmd *exec.Cmd, stderr io.Writer, _ *DebugLogger) (int, error) {
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("context cancelled: %w", ctx.Err())
+	}
+
+	err := cmd.Start()
+	if err != nil {
+		return 1, fmt.Errorf("starting bwrap: %w (check if kernel supports user namespaces: sysctl kernel.unprivileged_userns_clone)", err)
+	}
+
+	killCtx := getKillContext(ctx)
+
+	waitDone := make(chan error, 1)
+
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	select {
+	case waitErr := <-waitDone:
+		return extractExitCode(waitErr)
+
+	case <-ctx.Done():
+		// Context cancelled - send SIGTERM for graceful shutdown.
+		if cmd.Process != nil {
+			err := cmd.Process.Signal(syscall.SIGTERM)
+			if err != nil {
+				fmt.Fprintf(stderr, "warning: failed to send SIGTERM: %v\n", err)
+			}
+		}
+
+		select {
+		case waitErr := <-waitDone:
+			return extractExitCode(waitErr)
+		case <-killCtx.Done():
+			if cmd.Process != nil {
+				err := cmd.Process.Kill()
+				if err != nil {
+					fmt.Fprintf(stderr, "warning: failed to send SIGKILL: %v\n", err)
+				}
+			}
+
+			<-waitDone
+
+			return 0, nil
+		}
+
+	case <-killCtx.Done():
+		if cmd.Process != nil {
+			err := cmd.Process.Kill()
+			if err != nil {
+				fmt.Fprintf(stderr, "warning: failed to send SIGKILL: %v\n", err)
+			}
+		}
+
+		<-waitDone
+
+		return 0, nil
+	}
+}
+
+func extractExitCode(waitErr error) (int, error) {
+	if waitErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			return exitErr.ExitCode(), nil
+		}
+
+		return 1, fmt.Errorf("waiting for bwrap: %w", waitErr)
+	}
+
+	return 0, nil
+}
+
+func getSelfBinary() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("cannot locate agent-sandbox binary: %w", err)
+	}
+
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve agent-sandbox binary path: %w", err)
+	}
+
+	self = filepath.Clean(self)
+	if self == "" {
+		return "", errors.New("cannot locate agent-sandbox binary")
+	}
+
+	info, err := os.Stat(self)
+	if err != nil {
+		return "", fmt.Errorf("cannot stat agent-sandbox binary %q: %w", self, err)
+	}
+
+	if info.IsDir() {
+		return "", fmt.Errorf("agent-sandbox binary %q is a directory", self)
+	}
+
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("agent-sandbox binary %q is not executable", self)
+	}
+
+	return self, nil
+}
+
+// validateCommandRules checks that command presets are used correctly.
+// For example, @git can only be used with the "git" command.
+func validateCommandRules(commands map[string]CommandRule) error {
+	for cmdName, rule := range commands {
+		if rule.Kind != CommandRulePreset {
+			continue
+		}
+
+		presetCmd := strings.TrimPrefix(rule.Value, "@")
+		if cmdName != presetCmd {
+			return fmt.Errorf("%s: %s preset can only be used for '%s' command, not '%s'",
+				errInvalidCommandPresetMessage, rule.Value, presetCmd, cmdName)
 		}
 	}
 
 	return nil
-}
-
-// applyCmdFlags parses and applies --cmd KEY=VALUE flags to the config.
-// Supports repeated flags and comma-separated values within a single flag.
-func applyCmdFlags(cfg *Config, vals []string) error {
-	if cfg.Commands == nil {
-		cfg.Commands = make(map[string]CommandRule)
-	}
-
-	for _, v := range vals {
-		// Handle comma-separated values: --cmd git=true,rm=false
-		pairs := strings.SplitSeq(v, ",")
-
-		for pair := range pairs {
-			key, value, ok := strings.Cut(pair, "=")
-			if !ok {
-				return fmt.Errorf("%w: %q", ErrInvalidCmdFlag, pair)
-			}
-
-			key = strings.TrimSpace(key)
-			value = strings.TrimSpace(value)
-
-			if key == "" {
-				return fmt.Errorf("%w: empty key in %q", ErrInvalidCmdFlag, pair)
-			}
-
-			cfg.Commands[key] = parseCmdValue(value)
-		}
-	}
-
-	return nil
-}
-
-// parseCmdValue parses a command wrapper value string into a CommandRule.
-// Accepts: "true", "false", "@preset", or a script path.
-func parseCmdValue(value string) CommandRule {
-	switch value {
-	case "true":
-		return CommandRule{Kind: CommandRuleRaw}
-	case "false":
-		return CommandRule{Kind: CommandRuleBlock}
-	default:
-		if strings.HasPrefix(value, "@") {
-			return CommandRule{Kind: CommandRulePreset, Value: value}
-		}
-
-		return CommandRule{Kind: CommandRuleScript, Value: value}
-	}
 }
 
 // checkPlatformPrerequisites validates the runtime environment.
 func checkPlatformPrerequisites() error {
 	if runtime.GOOS != "linux" {
-		return ErrNotLinux
+		return errors.New(errNotLinuxMessage)
 	}
 
 	if os.Getuid() == 0 {
-		return ErrRunningAsRoot
+		return errors.New(errRunningAsRootMessage)
 	}
 
 	_, err := exec.LookPath("bwrap")
 	if err != nil {
-		return ErrBwrapNotFound
+		return errors.New(errBwrapNotFoundMessage)
 	}
 
 	return nil
 }
 
-// GetHomeDir returns the home directory, validating that it exists and is a directory.
-// It first checks the env map (respects container overrides), then falls back to os.UserHomeDir().
-func GetHomeDir(env map[string]string) (string, error) {
-	// Try env first (respect container overrides)
-	if home := env["HOME"]; home != "" {
-		info, err := os.Stat(home)
-		if err != nil {
-			return "", fmt.Errorf("%w: %s (from $HOME) does not exist: %w", ErrHomeNotFound, home, err)
-		}
-
-		if !info.IsDir() {
-			return "", fmt.Errorf("%w: %s (from $HOME)", ErrHomeNotDir, home)
-		}
-
-		return home, nil
-	}
-
-	// Fall back to os.UserHomeDir()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("%w: %w (set $HOME environment variable)", ErrHomeNotFound, err)
-	}
-
-	// Verify the fallback home exists and is a directory
-	info, err := os.Stat(home)
-	if err != nil {
-		return "", fmt.Errorf("%w: %s does not exist: %w", ErrHomeNotFound, home, err)
-	}
-
-	if !info.IsDir() {
-		return "", fmt.Errorf("%w: %s", ErrHomeNotDir, home)
-	}
-
-	return home, nil
-}
-
 // printDryRunOutput formats and prints the bwrap command for dry-run mode.
 // The output is shell-compatible and can be copy-pasted to run manually.
 func printDryRunOutput(output io.Writer, bwrapArgs []string, command []string) {
-	// Print bwrap with arguments using line continuation for readability
 	fprintf(output, "bwrap \\\n")
 
 	for _, arg := range bwrapArgs {
 		fprintf(output, "  %s \\\n", shellQuoteIfNeeded(arg))
 	}
 
-	// Print command separator and user command
 	fprintf(output, "  --")
 
 	for _, arg := range command {
@@ -385,10 +405,8 @@ func printDryRunOutput(output io.Writer, bwrapArgs []string, command []string) {
 // shellQuoteIfNeeded returns the string quoted if it contains special characters,
 // otherwise returns it unchanged. This makes the output shell-safe.
 func shellQuoteIfNeeded(str string) string {
-	// Check if the string needs quoting
 	for _, c := range str {
 		if !isShellSafeChar(c) {
-			// Use single quotes for safety, escaping any existing single quotes
 			escaped := strings.ReplaceAll(str, "'", "'\"'\"'")
 
 			return "'" + escaped + "'"
@@ -400,7 +418,6 @@ func shellQuoteIfNeeded(str string) string {
 
 // isShellSafeChar returns true if the character doesn't need quoting in shell.
 func isShellSafeChar(c rune) bool {
-	// Safe characters: alphanumeric, dash, underscore, dot, forward slash, colon, equals
 	return (c >= 'a' && c <= 'z') ||
 		(c >= 'A' && c <= 'Z') ||
 		(c >= '0' && c <= '9') ||
@@ -422,66 +439,75 @@ func getLoadedConfigPaths(cfg *Config) []string {
 	return paths
 }
 
-// getAppliedPresets returns the list of presets that were applied (not negated).
-func getAppliedPresets(presets []string) []string {
-	// Always start with @all as the implicit default
-	applied := []string{"@all"}
-	seen := map[string]bool{"@all": true}
-
-	for _, preset := range presets {
-		if strings.HasPrefix(preset, "!") {
-			continue // Skip negated presets
-		}
-
-		if !seen[preset] {
-			seen[preset] = true
-			applied = append(applied, preset)
-		}
+func withAgentSandboxOnPath(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
 	}
 
-	return applied
+	out := make(map[string]string, len(env)+1)
+	maps.Copy(out, env)
+
+	sandboxDir := filepath.Dir(sandboxBinaryPath)
+
+	pathVar := out["PATH"]
+	if pathVar == "" {
+		out["PATH"] = sandboxDir
+
+		return out
+	}
+
+	if slices.Contains(strings.Split(pathVar, ":"), sandboxDir) {
+		return out
+	}
+
+	out["PATH"] = sandboxDir + ":" + pathVar
+
+	return out
 }
 
-// getRemovedPresets returns the list of presets that were removed via negation.
-func getRemovedPresets(presets []string) []string {
-	var removed []string
+func filterNestedCommandRules(commands map[string]CommandRule) map[string]CommandRule {
+	if len(commands) == 0 {
+		return commands
+	}
 
-	for _, preset := range presets {
-		if after, ok := strings.CutPrefix(preset, "!"); ok {
-			removed = append(removed, after)
+	runtimeRoot := filepath.Dir(sandboxBinaryPath)
+
+	out := make(map[string]CommandRule, len(commands))
+	for cmdName, rule := range commands {
+		if cmdName == "" || strings.Contains(cmdName, "/") {
+			out[cmdName] = rule
+
+			continue
 		}
+
+		policyPath := filepath.Join(runtimeRoot, "policies", cmdName)
+
+		_, policyErr := os.Stat(policyPath)
+		if policyErr == nil {
+			continue
+		}
+
+		presetPath := filepath.Join(runtimeRoot, "presets", cmdName)
+
+		_, presetErr := os.Stat(presetPath)
+		if presetErr == nil {
+			continue
+		}
+
+		out[cmdName] = rule
 	}
 
-	return removed
+	if len(out) == 0 {
+		return nil
+	}
+
+	return out
 }
 
-// randomString8 generates a random 8-byte (16 hex character) string.
-// Used to create unique runtime paths for sandbox isolation.
-func randomString8() string {
-	bytes := make([]byte, 8)
+// isInsideSandbox checks if the current process is running inside an agent-sandbox
+// sandbox by testing for the presence of the sandbox-mounted agent-sandbox binary.
+func isInsideSandbox() bool {
+	_, err := os.Stat(sandboxBinaryPath)
 
-	_, err := rand.Read(bytes)
-	if err != nil {
-		// Fall back to a simple timestamp-based string if crypto/rand fails
-		return fmt.Sprintf("%x", os.Getpid())
-	}
-
-	return hex.EncodeToString(bytes)
-}
-
-// getSelfBinaryPath returns the absolute path to the agent-sandbox binary.
-// It resolves symlinks to get the real binary path.
-func getSelfBinaryPath() (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrSelfBinaryNotFound, err)
-	}
-
-	// Resolve any symlinks to get the real binary path
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return "", fmt.Errorf("%w: cannot resolve symlinks: %w", ErrSelfBinaryNotFound, err)
-	}
-
-	return self, nil
+	return err == nil
 }

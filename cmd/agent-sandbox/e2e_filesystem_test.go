@@ -18,8 +18,6 @@ const testOriginalContent = "original content"
 func Test_Sandbox_RoPath_Allows_Read(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a file outside the working directory that we'll mark as ro
@@ -45,8 +43,6 @@ func Test_Sandbox_RoPath_Allows_Read(t *testing.T) {
 
 func Test_Sandbox_RoPath_Blocks_Write(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -75,8 +71,6 @@ func Test_Sandbox_RoPath_Blocks_Write(t *testing.T) {
 
 func Test_Sandbox_RoPath_Blocks_Modify(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -115,8 +109,6 @@ func Test_Sandbox_RoPath_Blocks_Modify(t *testing.T) {
 func Test_Sandbox_RoPath_Blocks_Delete(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a file in a ro directory
@@ -150,8 +142,6 @@ func Test_Sandbox_RoPath_Blocks_Delete(t *testing.T) {
 func Test_Sandbox_ExcludePath_Blocks_Ls(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a directory with files to exclude
@@ -174,8 +164,6 @@ func Test_Sandbox_ExcludePath_Blocks_Ls(t *testing.T) {
 
 func Test_Sandbox_ExcludePath_Blocks_Cat(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -210,8 +198,6 @@ func Test_Sandbox_ExcludePath_Blocks_Cat(t *testing.T) {
 
 func Test_Sandbox_ExcludedFile_Blocks_Cat(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -263,8 +249,6 @@ func Test_Sandbox_ExcludedFile_Blocks_Cat(t *testing.T) {
 func Test_Sandbox_RwPath_Allows_Read(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a file in an rw directory
@@ -291,8 +275,6 @@ func Test_Sandbox_RwPath_Allows_Read(t *testing.T) {
 func Test_Sandbox_RwPath_Allows_Write(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create an rw directory
@@ -315,8 +297,6 @@ func Test_Sandbox_RwPath_Allows_Write(t *testing.T) {
 
 func Test_Sandbox_RwPath_Allows_Modify(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -350,8 +330,6 @@ func Test_Sandbox_RwPath_Allows_Modify(t *testing.T) {
 func Test_Sandbox_RwPath_Allows_Delete(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a file in an rw directory
@@ -383,8 +361,6 @@ func Test_Sandbox_RwPath_Allows_Delete(t *testing.T) {
 
 func Test_Sandbox_Specificity_RoChildOfRwParent_Is_Ro(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -433,8 +409,6 @@ func Test_Sandbox_Specificity_RoChildOfRwParent_Is_Ro(t *testing.T) {
 func Test_Sandbox_Specificity_RwChildOfRoParent_Is_Rw(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a directory structure: parent (ro) with child (rw)
@@ -474,8 +448,6 @@ func Test_Sandbox_Specificity_RwChildOfRoParent_Is_Rw(t *testing.T) {
 
 func Test_Sandbox_Specificity_ExcludeChildOfRwParent_Is_Hidden(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -520,8 +492,6 @@ func Test_Sandbox_Specificity_ExcludeChildOfRwParent_Is_Hidden(t *testing.T) {
 
 func Test_Sandbox_Specificity_ExcludeFileInRwDir_Only_Hides_File(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -588,8 +558,6 @@ func Test_Sandbox_Specificity_ExcludeFileInRwDir_Only_Hides_File(t *testing.T) {
 func Test_Sandbox_NonExistentPath_Is_Skipped_Silently(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Use a path that doesn't exist - should not cause an error
@@ -602,8 +570,6 @@ func Test_Sandbox_NonExistentPath_Is_Skipped_Silently(t *testing.T) {
 
 func Test_Sandbox_WorkingDirectory_Is_Writable_By_Default(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	// Create a separate work directory (not the same as HOME)
 	// When HOME==WorkDir, specificity rules make home read-only
@@ -637,8 +603,6 @@ func Test_Sandbox_WorkingDirectory_Is_Writable_By_Default(t *testing.T) {
 
 func Test_Sandbox_SymlinkTarget_Resolved_For_Ro(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -685,8 +649,6 @@ func Test_Sandbox_SymlinkTarget_Resolved_For_Ro(t *testing.T) {
 
 func Test_Sandbox_Multiple_Ro_Paths(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -740,8 +702,6 @@ func Test_Sandbox_Multiple_Ro_Paths(t *testing.T) {
 func Test_Sandbox_Multiple_Exclude_Paths(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create multiple directories to exclude
@@ -774,8 +734,6 @@ func Test_Sandbox_Multiple_Exclude_Paths(t *testing.T) {
 
 func Test_Sandbox_ConfigFile_RoPath(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -830,8 +788,6 @@ func Test_Sandbox_ConfigFile_RoPath(t *testing.T) {
 func Test_Sandbox_ConfigFile_ExcludePath(t *testing.T) {
 	t.Parallel()
 
-	RequireBwrap(t)
-
 	c := NewCLITester(t)
 
 	// Create a temp directory with a config file
@@ -864,5 +820,421 @@ func Test_Sandbox_ConfigFile_ExcludePath(t *testing.T) {
 
 	if strings.Contains(stdout, "secret.txt") {
 		t.Errorf("excluded file should not be visible via config: %s", stdout)
+	}
+}
+
+// ============================================================================
+// E2E tests for CLI flag overriding project config (ticket d5ghadr)
+// ============================================================================
+
+func Test_Sandbox_CLI_Rw_Overrides_Project_Config_Ro_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Create a subdirectory in the test project
+	examplesDir := filepath.Join(c.Dir, "examples")
+
+	err := os.MkdirAll(examplesDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create examples dir: %v", err)
+	}
+
+	// Write project config that marks examples/ as read-only
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["examples/"]
+		}
+	}`)
+
+	// First verify that without CLI override, examples/ is read-only
+	newFile := filepath.Join(examplesDir, "newfile.txt")
+	_, stderr, code := c.Run("touch", newFile)
+
+	if code == 0 {
+		t.Fatal("expected write to fail when examples/ is ro from project config")
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+
+	// Now use CLI --rw to override the project config
+	_, _, code = c.Run("--rw", "examples/", "touch", newFile)
+
+	if code != 0 {
+		t.Errorf("expected write to succeed with --rw override, got exit code %d", code)
+	}
+
+	// Verify the file was actually created on the host
+	_, statErr := os.Stat(newFile)
+	if statErr != nil {
+		t.Errorf("file should have been created with --rw override: %v", statErr)
+	}
+}
+
+func Test_Sandbox_CLI_Ro_Overrides_Project_Config_Rw_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Create a subdirectory in the test project
+	outputDir := filepath.Join(c.Dir, "output")
+
+	err := os.MkdirAll(outputDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create output dir: %v", err)
+	}
+
+	// Write project config that marks output/ as writable
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"rw": ["output/"]
+		}
+	}`)
+
+	// Use CLI --ro to override the project config and make it read-only
+	newFile := filepath.Join(outputDir, "newfile.txt")
+	_, stderr, code := c.Run("--ro", "output/", "touch", newFile)
+
+	if code == 0 {
+		t.Fatal("expected write to fail with --ro CLI override")
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+
+	// Verify the file was NOT created on the host
+	_, statErr := os.Stat(newFile)
+	if statErr == nil {
+		t.Error("file should NOT have been created with --ro override")
+	}
+}
+
+func Test_Sandbox_CLI_Exclude_Overrides_Project_Config_Ro_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Create a subdirectory in the test project with a file
+	secretsDir := filepath.Join(c.Dir, "secrets")
+
+	err := os.MkdirAll(secretsDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create secrets dir: %v", err)
+	}
+
+	err = os.WriteFile(filepath.Join(secretsDir, "api-key.txt"), []byte("secret123"), 0o644)
+	if err != nil {
+		t.Fatalf("failed to write secret file: %v", err)
+	}
+
+	// Write project config that marks secrets/ as read-only
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["secrets/"]
+		}
+	}`)
+
+	// First verify that without CLI override, secrets/ is readable
+	stdout, stderr, code := c.Run("cat", filepath.Join(secretsDir, "api-key.txt"))
+
+	if code != 0 {
+		t.Fatalf("expected read to succeed when secrets/ is ro, got: %s", stderr)
+	}
+
+	if !strings.Contains(stdout, "secret123") {
+		t.Errorf("expected to read secret content, got: %s", stdout)
+	}
+
+	// Now use CLI --exclude to override the project config and hide it completely
+	stdout, _, _ = c.Run("--exclude", "secrets/", "ls", secretsDir)
+
+	// ls should still succeed but show nothing (or show error about non-existent directory)
+	// The key is that the file should not be visible
+	if strings.Contains(stdout, "api-key.txt") {
+		t.Error("secret file should NOT be visible with --exclude CLI override")
+	}
+}
+
+func Test_Sandbox_Project_Config_Overrides_Global_Config_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	tmpDir := t.TempDir()
+	xdgDir := t.TempDir()
+
+	c := &CLI{
+		t:   t,
+		Dir: workDir,
+		Env: map[string]string{
+			"HOME":            homeDir,
+			"PATH":            systemPath(),
+			"TMPDIR":          tmpDir,
+			"XDG_CONFIG_HOME": xdgDir,
+		},
+	}
+
+	// Create a directory under the project that global config makes writable,
+	// but project config marks read-only.
+	targetDir := filepath.Join(workDir, "target")
+
+	err := os.MkdirAll(targetDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+
+	// Global config: mark target/ as writable.
+	globalConfigDir := filepath.Join(xdgDir, "agent-sandbox")
+	mustMkdir(t, globalConfigDir)
+	mustWriteFile(t, filepath.Join(globalConfigDir, "config.json"), `{
+		"filesystem": {
+			"rw": ["target/"]
+		}
+	}`)
+
+	// Project config: override and mark target/ as read-only.
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["target/"]
+		}
+	}`)
+
+	newFileRel := "target/newfile.txt"
+	_, stderr, code := c.Run("touch", newFileRel)
+
+	if code == 0 {
+		t.Fatalf("expected write to fail when project config marks target/ as ro (should override global rw)\nstderr: %s", stderr)
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+
+	// Verify the file was NOT created on the host.
+	_, statErr := os.Stat(filepath.Join(workDir, newFileRel))
+	if statErr == nil {
+		t.Error("file should NOT have been created on host")
+	}
+}
+
+func Test_Sandbox_Project_Config_Overrides_Global_Config_Exclude_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	tmpDir := t.TempDir()
+	xdgDir := t.TempDir()
+
+	c := &CLI{
+		t:   t,
+		Dir: workDir,
+		Env: map[string]string{
+			"HOME":            homeDir,
+			"PATH":            systemPath(),
+			"TMPDIR":          tmpDir,
+			"XDG_CONFIG_HOME": xdgDir,
+		},
+	}
+
+	// Create a directory under the project that global config excludes,
+	// but project config re-exposes as read-only.
+	targetDir := filepath.Join(workDir, "target")
+
+	err := os.MkdirAll(targetDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+
+	secret := "secret123"
+	mustWriteFile(t, filepath.Join(targetDir, "secret.txt"), secret)
+
+	// Global config: exclude target/.
+	globalConfigDir := filepath.Join(xdgDir, "agent-sandbox")
+	mustMkdir(t, globalConfigDir)
+	mustWriteFile(t, filepath.Join(globalConfigDir, "config.json"), `{
+		"filesystem": {
+			"exclude": ["target/"]
+		}
+	}`)
+
+	// Project config: override and mark target/ as read-only (should be visible again).
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["target/"]
+		}
+	}`)
+
+	stdout, stderr, code := c.Run("cat", "target/secret.txt")
+	if code != 0 {
+		t.Fatalf("expected read to succeed when project config marks target/ as ro (should override global exclude)\nstderr: %s", stderr)
+	}
+
+	if !strings.Contains(stdout, secret) {
+		t.Errorf("expected to read secret content, got: %s", stdout)
+	}
+
+	// Writes should still be blocked by the project ro rule.
+	_, stderr, code = c.Run("touch", "target/newfile.txt")
+	if code == 0 {
+		t.Fatalf("expected write to fail when project config marks target/ as ro\nstderr: %s", stderr)
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+}
+
+func Test_Sandbox_Project_Config_Ro_Wins_Over_Rw_For_Same_Path_In_Same_Layer(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	tmpDir := t.TempDir()
+
+	c := &CLI{
+		t:   t,
+		Dir: workDir,
+		Env: map[string]string{
+			"HOME":   homeDir,
+			"PATH":   systemPath(),
+			"TMPDIR": tmpDir,
+		},
+	}
+
+	targetDir := filepath.Join(workDir, "target")
+
+	err := os.MkdirAll(targetDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+
+	// Same layer conflict: target/ is listed as both rw and ro.
+	// Access-level precedence within a single config layer should be:
+	// exclude > ro > rw.
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"rw": ["target/"],
+			"ro": ["target/"]
+		}
+	}`)
+
+	newFileRel := "target/newfile.txt"
+
+	_, stderr, code := c.Run("touch", newFileRel)
+	if code == 0 {
+		t.Fatalf("expected write to fail when project config lists the same path as rw and ro (ro should win)\nstderr: %s", stderr)
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+
+	_, statErr := os.Stat(filepath.Join(workDir, newFileRel))
+	if statErr == nil {
+		t.Error("file should NOT have been created on host")
+	}
+}
+
+func Test_Sandbox_Project_Config_Can_Relax_Global_Config_Ro_For_Same_Path(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	tmpDir := t.TempDir()
+	xdgDir := t.TempDir()
+
+	c := &CLI{
+		t:   t,
+		Dir: workDir,
+		Env: map[string]string{
+			"HOME":            homeDir,
+			"PATH":            systemPath(),
+			"TMPDIR":          tmpDir,
+			"XDG_CONFIG_HOME": xdgDir,
+		},
+	}
+
+	targetDir := filepath.Join(workDir, "target")
+
+	err := os.MkdirAll(targetDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+
+	// Global config: mark target/ as read-only.
+	globalConfigDir := filepath.Join(xdgDir, "agent-sandbox")
+	mustMkdir(t, globalConfigDir)
+	mustWriteFile(t, filepath.Join(globalConfigDir, "config.json"), `{
+		"filesystem": {
+			"ro": ["target/"]
+		}
+	}`)
+
+	// Without a project override, writes should fail.
+	_, stderr, code := c.Run("touch", "target/global-ro.txt")
+	if code == 0 {
+		t.Fatalf("expected write to fail when global config marks target/ as ro\nstderr: %s", stderr)
+	}
+
+	if !strings.Contains(strings.ToLower(stderr), "read-only") {
+		t.Errorf("expected read-only error, got: %s", stderr)
+	}
+
+	// Project config: relax target/ to writable.
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"rw": ["target/"]
+		}
+	}`)
+
+	newFileRel := "target/project-rw.txt"
+
+	_, stderr, code = c.Run("touch", newFileRel)
+	if code != 0 {
+		t.Fatalf("expected write to succeed when project config marks target/ as rw (should override global ro)\nstderr: %s", stderr)
+	}
+
+	_, statErr := os.Stat(filepath.Join(workDir, newFileRel))
+	if statErr != nil {
+		t.Errorf("file should have been created on host: %v", statErr)
+	}
+}
+
+func Test_Sandbox_Project_Config_Exclude_Wins_Over_Ro_For_Same_Path_In_Same_Layer(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	targetDir := filepath.Join(c.Dir, "target")
+
+	err := os.MkdirAll(targetDir, 0o750)
+	if err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+
+	secret := "secret123"
+	mustWriteFile(t, filepath.Join(targetDir, "secret.txt"), secret)
+
+	// Same layer conflict: target/ is listed as both ro and exclude.
+	// Access-level precedence within a single config layer should be:
+	// exclude > ro > rw.
+	c.WriteFile(".agent-sandbox.json", `{
+		"filesystem": {
+			"ro": ["target/"],
+			"exclude": ["target/"]
+		}
+	}`)
+
+	stdout, _, _ := c.Run("ls", "target")
+	if strings.Contains(stdout, "secret.txt") {
+		t.Error("excluded file should NOT be visible when target/ is excluded")
+	}
+
+	stdout, stderr, code := c.Run("cat", "target/secret.txt")
+	if code == 0 {
+		t.Fatalf("expected read to fail when target/ is excluded\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 }

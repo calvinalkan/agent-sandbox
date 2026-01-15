@@ -5,7 +5,7 @@ MAKEFLAGS += --warn-undefined-variables --no-builtin-rules -j
 .DELETE_ON_ERROR:
 .DEFAULT_GOAL := build
 
-.PHONY: build test lint clean install vet install-tools check modernize fmt
+.PHONY: build test lint clean install vet install-tools check fmt modernize
 
 BINARY := agent-sandbox
 GO := go
@@ -18,18 +18,19 @@ build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/agent-sandbox
 	@[ -e ~/.local/bin/$(BINARY) ] || ln -sf $(CURDIR)/$(BINARY) ~/.local/bin/$(BINARY)
 
-modernize:
-	modernize -fix ./...
-
 vet:
 	$(GO) vet ./...
 
-fmt: modernize
+fmt:
+	golangci-lint run --fix --enable-only=modernize
 	golangci-lint fmt
+
+modernize:
+	modernize -fix ./...
 
 lint:
 	golangci-lint config verify
-	@./backpressure/no-lint-suppress.sh
+	@for script in ./backpressure/*.sh; do "$$script"; done
 	golangci-lint run --fix ./...
 
 test:
@@ -42,6 +43,7 @@ install:
 	$(GO) install ./cmd/agent-sandbox
 
 install-tools:
-	$(GO) install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest
+	@echo "golangci-lint includes all needed tools (modernize, etc.)"
+	@echo "Install with: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
 
 check: vet lint test

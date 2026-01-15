@@ -1,620 +1,446 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// testHookContent is the content for test hook files.
-const testHookContent = "#!/bin/sh\nexit 0\n"
-
 // ============================================================================
-// E2E tests for Git repository and worktree protection
-// These tests verify that the @git preset properly protects git hooks and config
-// in both normal repositories and worktrees.
+// E2E tests for @git preset - protects .git/hooks and .git/config
+//
+// These tests use RunBinary() because git commands go through command wrappers
+// that exec back into agent-sandbox. In-process CLI.Run() won't work because
+// os.Executable() returns the test binary, not the agent-sandbox binary.
 // ============================================================================
 
-// Test_Sandbox_Git_Cannot_Write_To_Hooks_In_Normal_Repo verifies that
-// .git/hooks cannot be modified inside the sandbox for a normal git repository.
-func Test_Sandbox_Git_Cannot_Write_To_Hooks_In_Normal_Repo(t *testing.T) {
+func Test_Git_Hook_Write_Blocked_When_Git_Preset_Enabled(t *testing.T) {
 	t.Parallel()
+	RequireWrapperMounting(t)
 
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create a real git repo
 	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Test Repo\n")
-	repo.Commit("initial commit")
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
 
-	// Create a hook file to protect
+	// Create a hook to protect
 	hookPath := filepath.Join(repo.Dir, ".git", "hooks", "pre-commit")
+	mustMkdir(t, filepath.Dir(hookPath))
 
-	err := os.MkdirAll(filepath.Dir(hookPath), 0o750)
-	if err != nil {
-		t.Fatalf("failed to create hooks dir: %v", err)
-	}
+	original := "#!/bin/sh\nexit 0"
+	mustWriteFile(t, hookPath, original)
 
-	originalContent := testHookContent
+	_, _, code := RunBinary(t, "-C", repo.Dir, "sh", "-c", "echo pwned > "+hookPath)
 
-	err = os.WriteFile(hookPath, []byte(originalContent), 0o755)
-	if err != nil {
-		t.Fatalf("failed to create hook file: %v", err)
-	}
-
-	// Create CLI tester pointing to the repo
-	c := NewCLITesterAt(t, repo.Dir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Try to modify the hook inside the sandbox
-	_, _, code := c.Run("bash", "-c", "echo 'hacked' > "+hookPath)
-
-	// Should fail because .git/hooks is read-only
 	if code == 0 {
-		t.Error("expected non-zero exit code when writing to .git/hooks")
+		t.Error("expected non-zero exit code when writing to protected hook")
 	}
 
-	// Verify the hook was not modified
-	content, err := os.ReadFile(hookPath)
-	if err != nil {
-		t.Fatalf("failed to read hook file: %v", err)
-	}
-
-	if strings.Contains(string(content), "hacked") {
-		t.Error(".git/hooks/pre-commit was modified despite protection")
-	}
-
-	if string(content) != originalContent {
-		t.Errorf("hook content changed, expected %q, got %q", originalContent, string(content))
+	// Verify hook unchanged on host
+	content := mustReadFile(t, hookPath)
+	if content != original {
+		t.Errorf("hook was modified: got %q, want %q", content, original)
 	}
 }
 
-// Test_Sandbox_Git_Cannot_Write_To_Config_In_Normal_Repo verifies that
-// .git/config cannot be modified inside the sandbox for a normal git repository.
-func Test_Sandbox_Git_Cannot_Write_To_Config_In_Normal_Repo(t *testing.T) {
+func Test_Git_Config_Write_Blocked_When_Git_Preset_Enabled(t *testing.T) {
 	t.Parallel()
+	RequireWrapperMounting(t)
 
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create a real git repo
 	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Test Repo\n")
-	repo.Commit("initial commit")
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
 
-	// Get the config file path
 	configPath := filepath.Join(repo.Dir, ".git", "config")
+	original := mustReadFile(t, configPath)
 
-	// Read original config
-	originalContent, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read config file: %v", err)
-	}
+	_, _, code := RunBinary(t, "-C", repo.Dir, "sh", "-c", "echo pwned >> "+configPath)
 
-	// Create CLI tester pointing to the repo
-	c := NewCLITesterAt(t, repo.Dir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Try to modify the config inside the sandbox
-	_, _, code := c.Run("bash", "-c", "echo 'hacked = true' >> "+configPath)
-
-	// Should fail because .git/config is read-only
 	if code == 0 {
-		t.Error("expected non-zero exit code when writing to .git/config")
+		t.Error("expected non-zero exit code when writing to protected config")
 	}
 
-	// Verify the config was not modified
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read config file: %v", err)
-	}
-
-	if strings.Contains(string(content), "hacked") {
-		t.Error(".git/config was modified despite protection")
-	}
-
-	if !bytes.Equal(content, originalContent) {
-		t.Errorf("config content changed unexpectedly")
+	content := mustReadFile(t, configPath)
+	if content != original {
+		t.Error("git config was modified")
 	}
 }
 
-// Test_Sandbox_Git_Cannot_Create_New_Hook_In_Normal_Repo verifies that
-// new hooks cannot be created in .git/hooks inside the sandbox.
-func Test_Sandbox_Git_Cannot_Create_New_Hook_In_Normal_Repo(t *testing.T) {
+func Test_Git_Hook_Create_Blocked_When_Git_Preset_Enabled(t *testing.T) {
 	t.Parallel()
+	RequireWrapperMounting(t)
 
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create a real git repo
 	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Test Repo\n")
-	repo.Commit("initial commit")
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
 
-	// Ensure hooks directory exists
+	// Ensure hooks dir exists but target hook doesn't
 	hooksDir := filepath.Join(repo.Dir, ".git", "hooks")
+	mustMkdir(t, hooksDir)
+	newHook := filepath.Join(hooksDir, "pre-push")
 
-	err := os.MkdirAll(hooksDir, 0o750)
-	if err != nil {
-		t.Fatalf("failed to create hooks dir: %v", err)
-	}
+	_, _, code := RunBinary(t, "-C", repo.Dir, "sh", "-c", "echo '#!/bin/sh' > "+newHook)
 
-	newHookPath := filepath.Join(hooksDir, "post-commit")
-
-	// Create CLI tester pointing to the repo
-	c := NewCLITesterAt(t, repo.Dir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Try to create a new hook inside the sandbox
-	_, _, code := c.Run("bash", "-c", "echo '#!/bin/sh\necho malicious' > "+newHookPath)
-
-	// Should fail because .git/hooks is read-only
 	if code == 0 {
-		// Check if the file was actually created
-		_, statErr := os.Stat(newHookPath)
-		if statErr == nil {
-			t.Error("new hook was created despite protection")
-		}
+		t.Error("expected non-zero exit code when creating new hook")
 	}
 
-	// Verify the hook was not created
-	_, statErr := os.Stat(newHookPath)
-	if statErr == nil {
-		content, _ := os.ReadFile(newHookPath)
-		t.Errorf("hook file should not exist, but contains: %s", string(content))
+	if exists, _ := fileExists(newHook); exists {
+		t.Error("hook should not have been created on host")
 	}
 }
 
-// Test_Sandbox_Git_Worktree_Cannot_Write_To_Main_Repo_Hooks verifies that
-// when running in a worktree, the main repository's hooks cannot be modified.
-func Test_Sandbox_Git_Worktree_Cannot_Write_To_Main_Repo_Hooks(t *testing.T) {
+// ============================================================================
+// E2E tests for @git-strict preset - protects other branches and tags
+// ============================================================================
+
+func Test_Git_Commit_Succeeds_When_On_Current_Branch_With_Git_Strict(t *testing.T) {
 	t.Parallel()
+	RequireWrapperMounting(t)
 
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create main repo
 	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Main Repo\n")
-	repo.Commit("initial commit")
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
 
-	// Create a hook in the main repo
-	mainHookPath := filepath.Join(repo.Dir, ".git", "hooks", "pre-commit")
+	// Write config enabling git-strict
+	configPath := filepath.Join(repo.Dir, ".agent-sandbox.json")
+	mustWriteFile(t, configPath, `{"filesystem":{"presets":["@git-strict"]}}`)
 
-	err := os.MkdirAll(filepath.Dir(mainHookPath), 0o750)
-	if err != nil {
-		t.Fatalf("failed to create hooks dir: %v", err)
-	}
+	// Create file to commit
+	repo.WriteFile("new.txt", "new")
+	repo.run("add", "new.txt")
 
-	originalContent := testHookContent
-
-	err = os.WriteFile(mainHookPath, []byte(originalContent), 0o755)
-	if err != nil {
-		t.Fatalf("failed to create hook file: %v", err)
-	}
-
-	// Create a worktree
-	worktreeDir := filepath.Join(filepath.Dir(repo.Dir), "feature-worktree")
-	repo.AddWorktree(worktreeDir, "feature")
-
-	// Create CLI tester pointing to the worktree
-	c := NewCLITesterAt(t, worktreeDir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Try to modify the main repo's hook from inside the worktree sandbox
-	_, _, code := c.Run("bash", "-c", "echo 'hacked from worktree' > "+mainHookPath)
-
-	// Should fail because main repo's .git/hooks is read-only
-	if code == 0 {
-		t.Error("expected non-zero exit code when writing to main repo hooks from worktree")
-	}
-
-	// Verify the hook was not modified
-	content, err := os.ReadFile(mainHookPath)
-	if err != nil {
-		t.Fatalf("failed to read hook file: %v", err)
-	}
-
-	if strings.Contains(string(content), "hacked") {
-		t.Error("main repo hook was modified from worktree despite protection")
-	}
-
-	if string(content) != originalContent {
-		t.Errorf("hook content changed, expected %q, got %q", originalContent, string(content))
-	}
-}
-
-// Test_Sandbox_Git_Worktree_Cannot_Write_To_Main_Repo_Config verifies that
-// when running in a worktree, the main repository's config cannot be modified.
-func Test_Sandbox_Git_Worktree_Cannot_Write_To_Main_Repo_Config(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create main repo
-	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Main Repo\n")
-	repo.Commit("initial commit")
-
-	// Get the main repo config file path
-	mainConfigPath := filepath.Join(repo.Dir, ".git", "config")
-
-	// Read original config
-	originalContent, err := os.ReadFile(mainConfigPath)
-	if err != nil {
-		t.Fatalf("failed to read config file: %v", err)
-	}
-
-	// Create a worktree
-	worktreeDir := filepath.Join(filepath.Dir(repo.Dir), "feature-worktree")
-	repo.AddWorktree(worktreeDir, "feature")
-
-	// Create CLI tester pointing to the worktree
-	c := NewCLITesterAt(t, worktreeDir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Try to modify the main repo's config from inside the worktree sandbox
-	_, _, code := c.Run("bash", "-c", "echo '[hacked]' >> "+mainConfigPath)
-
-	// Should fail because main repo's .git/config is read-only
-	if code == 0 {
-		t.Error("expected non-zero exit code when writing to main repo config from worktree")
-	}
-
-	// Verify the config was not modified
-	content, err := os.ReadFile(mainConfigPath)
-	if err != nil {
-		t.Fatalf("failed to read config file: %v", err)
-	}
-
-	if strings.Contains(string(content), "hacked") {
-		t.Error("main repo config was modified from worktree despite protection")
-	}
-
-	if !bytes.Equal(content, originalContent) {
-		t.Errorf("config content changed unexpectedly")
-	}
-}
-
-// Test_Sandbox_Git_Worktree_Cannot_Write_To_Worktree_Gitdir_Hooks verifies that
-// the worktree-specific gitdir hooks cannot be modified.
-func Test_Sandbox_Git_Worktree_Cannot_Write_To_Worktree_Gitdir_Hooks(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create main repo
-	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Main Repo\n")
-	repo.Commit("initial commit")
-
-	// Create a worktree
-	worktreeDir := filepath.Join(filepath.Dir(repo.Dir), "feature-worktree")
-	repo.AddWorktree(worktreeDir, "feature")
-
-	// Find the worktree-specific gitdir by reading the .git file
-	// The worktree gitdir is at .git/worktrees/<worktree-dir-basename>/
-	worktreeGitDir := filepath.Join(repo.Dir, ".git", "worktrees", filepath.Base(worktreeDir))
-
-	// Create a hook in the worktree gitdir
-	hookPath := filepath.Join(worktreeGitDir, "hooks", "pre-commit")
-
-	err := os.MkdirAll(filepath.Dir(hookPath), 0o750)
-	if err != nil {
-		t.Fatalf("failed to create hooks dir: %v", err)
-	}
-
-	originalContent := testHookContent
-
-	err = os.WriteFile(hookPath, []byte(originalContent), 0o755)
-	if err != nil {
-		t.Fatalf("failed to create hook file: %v", err)
-	}
-
-	// Create CLI tester pointing to the worktree
-	c := NewCLITesterAt(t, worktreeDir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Try to modify the worktree gitdir hook
-	_, _, code := c.Run("bash", "-c", "echo 'hacked worktree hook' > "+hookPath)
-
-	// Should fail because worktree gitdir hooks are read-only
-	if code == 0 {
-		t.Error("expected non-zero exit code when writing to worktree gitdir hooks")
-	}
-
-	// Verify the hook was not modified
-	content, err := os.ReadFile(hookPath)
-	if err != nil {
-		t.Fatalf("failed to read hook file: %v", err)
-	}
-
-	if strings.Contains(string(content), "hacked") {
-		t.Error("worktree gitdir hook was modified despite protection")
-	}
-
-	if string(content) != originalContent {
-		t.Errorf("hook content changed, expected %q, got %q", originalContent, string(content))
-	}
-}
-
-// Test_Sandbox_Git_Worktree_Cannot_Write_To_Worktree_Gitdir_Config verifies that
-// the worktree-specific config cannot be modified.
-func Test_Sandbox_Git_Worktree_Cannot_Write_To_Worktree_Gitdir_Config(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create main repo
-	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Main Repo\n")
-	repo.Commit("initial commit")
-
-	// Create a worktree
-	worktreeDir := filepath.Join(filepath.Dir(repo.Dir), "feature-worktree")
-	repo.AddWorktree(worktreeDir, "feature")
-
-	// Find the worktree-specific gitdir
-	worktreeGitDir := filepath.Join(repo.Dir, ".git", "worktrees", filepath.Base(worktreeDir))
-	worktreeConfigPath := filepath.Join(worktreeGitDir, "config")
-
-	// Create the worktree config file (the preset protects .../config)
-	originalContent := "[core]\n\tworktree = true\n"
-
-	err := os.WriteFile(worktreeConfigPath, []byte(originalContent), 0o644)
-	if err != nil {
-		t.Fatalf("failed to create worktree config: %v", err)
-	}
-
-	// Create CLI tester pointing to the worktree
-	c := NewCLITesterAt(t, worktreeDir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Try to modify the worktree config
-	_, _, code := c.Run("bash", "-c", "echo '[hacked]' >> "+worktreeConfigPath)
-
-	// Should fail because worktree config is read-only
-	if code == 0 {
-		t.Error("expected non-zero exit code when writing to worktree config")
-	}
-
-	// Verify the config was not modified
-	content, err := os.ReadFile(worktreeConfigPath)
-	if err != nil {
-		t.Fatalf("failed to read worktree config file: %v", err)
-	}
-
-	if strings.Contains(string(content), "hacked") {
-		t.Error("worktree config was modified despite protection")
-	}
-
-	if string(content) != originalContent {
-		t.Errorf("config content changed unexpectedly")
-	}
-}
-
-// Test_Sandbox_Git_Protection_Skips_Non_Git_Directory verifies that
-// the sandbox works correctly in directories that are not git repositories.
-// When no .git exists, @git preset has no effect and sandbox works normally.
-func Test_Sandbox_Git_Protection_Skips_Non_Git_Directory(t *testing.T) {
-	t.Parallel()
-
-	RequireBwrap(t)
-
-	c := NewCLITester(t)
-
-	// Write a file in TMPDIR (always writable)
-	// Note: When HOME==WorkDir, workdir becomes read-only due to specificity rules
-	testFile := c.TempFile("test.txt")
-	stdout, stderr, code := c.Run("bash", "-c", "echo 'hello' > "+testFile)
+	_, stderr, code := RunBinary(t, "-C", repo.Dir, "git", "commit", "-m", "test commit")
 
 	if code != 0 {
-		t.Fatalf("expected exit code 0 in non-git dir, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
-	}
-
-	// Verify the file was created
-	content, err := os.ReadFile(testFile)
-	if err != nil {
-		t.Fatalf("failed to read test file: %v", err)
-	}
-
-	if !strings.Contains(string(content), "hello") {
-		t.Errorf("expected 'hello' in test file, got: %s", string(content))
+		t.Errorf("commit should succeed on current branch, got code %d\nstderr: %s", code, stderr)
 	}
 }
 
-// Test_Sandbox_Git_Can_Still_Read_Hooks verifies that hooks can be read
-// even though they cannot be written.
-func Test_Sandbox_Git_Can_Still_Read_Hooks(t *testing.T) {
+func Test_Git_Branch_Delete_Blocked_When_Git_Strict_Enabled(t *testing.T) {
 	t.Parallel()
+	RequireWrapperMounting(t)
 
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create a real git repo
 	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Test Repo\n")
-	repo.Commit("initial commit")
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
 
-	// Create a hook file
+	// Create and merge a branch so we can use safe delete (-d)
+	repo.run("checkout", "-b", "to-delete")
+	repo.WriteFile("branch-file.txt", "branch content")
+	repo.run("add", "branch-file.txt")
+	repo.run("commit", "-m", "branch commit")
+	repo.run("checkout", "master")
+	repo.run("merge", "to-delete")
+
+	configPath := filepath.Join(repo.Dir, ".agent-sandbox.json")
+	mustWriteFile(t, configPath, `{"filesystem":{"presets":["@git-strict"]}}`)
+
+	// Use -d (safe delete) since -D is blocked by wrapper safety rules
+	_, _, code := RunBinary(t, "-C", repo.Dir, "git", "branch", "-d", "to-delete")
+
+	if code == 0 {
+		t.Error("should not be able to delete other branch")
+	}
+}
+
+func Test_Git_Tag_Create_Blocked_When_Git_Strict_Enabled(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+
+	configPath := filepath.Join(repo.Dir, ".agent-sandbox.json")
+	mustWriteFile(t, configPath, `{"filesystem":{"presets":["@git-strict"]}}`)
+
+	_, _, code := RunBinary(t, "-C", repo.Dir, "git", "tag", "v1.0.0")
+
+	if code == 0 {
+		t.Error("should not be able to create tag")
+	}
+}
+
+func Test_Git_Tag_Delete_Blocked_When_Git_Strict_Enabled(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+	repo.run("tag", "existing-tag") // Create outside sandbox
+
+	configPath := filepath.Join(repo.Dir, ".agent-sandbox.json")
+	mustWriteFile(t, configPath, `{"filesystem":{"presets":["@git-strict"]}}`)
+
+	_, _, code := RunBinary(t, "-C", repo.Dir, "git", "tag", "-d", "existing-tag")
+
+	if code == 0 {
+		t.Error("should not be able to delete tag")
+	}
+}
+
+// ============================================================================
+// E2E tests for disabling @git protection
+// ============================================================================
+
+func Test_Git_Hook_Write_Succeeds_When_Git_Preset_Disabled(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+
+	// Create a hook
 	hookPath := filepath.Join(repo.Dir, ".git", "hooks", "pre-commit")
+	mustMkdir(t, filepath.Dir(hookPath))
+	mustWriteFile(t, hookPath, "#!/bin/sh\nexit 0")
 
-	err := os.MkdirAll(filepath.Dir(hookPath), 0o750)
-	if err != nil {
-		t.Fatalf("failed to create hooks dir: %v", err)
-	}
+	// Disable @git protection
+	configPath := filepath.Join(repo.Dir, ".agent-sandbox.json")
+	mustWriteFile(t, configPath, `{"filesystem":{"presets":["!@git"]}}`)
 
-	hookContent := "#!/bin/sh\necho 'readable hook'\nexit 0\n"
-
-	err = os.WriteFile(hookPath, []byte(hookContent), 0o755)
-	if err != nil {
-		t.Fatalf("failed to create hook file: %v", err)
-	}
-
-	// Create CLI tester pointing to the repo
-	c := NewCLITesterAt(t, repo.Dir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Read the hook inside the sandbox
-	stdout, stderr, code := c.Run("cat", hookPath)
+	_, _, code := RunBinary(t, "-C", repo.Dir, "sh", "-c", "echo '#!/bin/sh\necho pwned' > "+hookPath)
 
 	if code != 0 {
-		t.Fatalf("expected exit code 0 when reading hook, got %d\nstderr: %s", code, stderr)
+		t.Error("write to hook should succeed when @git is disabled")
 	}
 
-	if !strings.Contains(stdout, "readable hook") {
-		t.Errorf("expected hook content in output, got: %s", stdout)
+	// Verify hook was modified on host
+	content := mustReadFile(t, hookPath)
+	if content != "#!/bin/sh\necho pwned\n" {
+		t.Errorf("hook should have been modified, got: %q", content)
 	}
 }
 
-// Test_Sandbox_Git_Can_Still_Read_Config verifies that config can be read
-// even though it cannot be written.
-func Test_Sandbox_Git_Can_Still_Read_Config(t *testing.T) {
+func Test_Git_Tag_Create_Succeeds_When_Git_Strict_Disabled(t *testing.T) {
 	t.Parallel()
+	RequireWrapperMounting(t)
 
-	RequireBwrap(t)
-	RequireGit(t)
-
-	// Create a real git repo
 	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Test Repo\n")
-	repo.Commit("initial commit")
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
 
-	// Get the config file path
-	configPath := filepath.Join(repo.Dir, ".git", "config")
+	// Disable @git-strict protection
+	configPath := filepath.Join(repo.Dir, ".agent-sandbox.json")
+	mustWriteFile(t, configPath, `{"filesystem":{"presets":["!@git-strict"]}}`)
 
-	// Create CLI tester pointing to the repo
-	c := NewCLITesterAt(t, repo.Dir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir) // Parent dir as home
-
-	// Read the config inside the sandbox
-	stdout, stderr, code := c.Run("cat", configPath)
+	_, stderr, code := RunBinary(t, "-C", repo.Dir, "git", "tag", "v1.0.0")
 
 	if code != 0 {
-		t.Fatalf("expected exit code 0 when reading config, got %d\nstderr: %s", code, stderr)
+		t.Errorf("tag creation should succeed when @git-strict is disabled, stderr: %s", stderr)
 	}
 
-	// Config should contain the repository format version or core section
-	if !strings.Contains(stdout, "[core]") {
-		t.Errorf("expected [core] in config output, got: %s", stdout)
+	// Verify tag exists on host
+	repo.run("tag", "-l", "v1.0.0") // Will fail test if tag doesn't exist
+}
+
+func Test_Git_Branch_Delete_Succeeds_When_Git_Strict_Disabled(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+
+	// Create and merge a branch so we can use safe delete (-d)
+	repo.run("checkout", "-b", "to-delete")
+	repo.WriteFile("branch-file.txt", "branch content")
+	repo.run("add", "branch-file.txt")
+	repo.run("commit", "-m", "branch commit")
+	repo.run("checkout", "master")
+	repo.run("merge", "to-delete")
+
+	// Disable @git-strict protection
+	configPath := filepath.Join(repo.Dir, ".agent-sandbox.json")
+	mustWriteFile(t, configPath, `{"filesystem":{"presets":["!@git-strict"]}}`)
+
+	// Use -d (safe delete) since -D is blocked by wrapper safety rules
+	_, stderr, code := RunBinary(t, "-C", repo.Dir, "git", "branch", "-d", "to-delete")
+
+	if code != 0 {
+		t.Errorf("branch delete should succeed when @git-strict is disabled, stderr: %s", stderr)
 	}
 }
 
-// Test_Sandbox_Git_Worktree_Protects_All_Four_Paths verifies that all four
-// paths are protected in a worktree: main hooks, main config, worktree hooks,
-// worktree config.
-func Test_Sandbox_Git_Worktree_Protects_All_Four_Paths(t *testing.T) {
+func Test_Git_Worktree_Protects_Main_Repo_Hooks(t *testing.T) {
 	t.Parallel()
-
-	RequireBwrap(t)
-	RequireGit(t)
+	RequireWrapperMounting(t)
 
 	// Create main repo
-	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Main Repo\n")
-	repo.Commit("initial commit")
+	mainRepo := NewGitRepo(t)
+	mainRepo.WriteFile("README.md", "# Test")
+	mainRepo.Commit("initial")
 
-	// Create a worktree
-	worktreeDir := filepath.Join(filepath.Dir(repo.Dir), "feature-worktree")
-	repo.AddWorktree(worktreeDir, "feature")
+	// Create a hook in main repo to protect
+	hookPath := filepath.Join(mainRepo.Dir, ".git", "hooks", "pre-commit")
+	mustMkdir(t, filepath.Dir(hookPath))
 
-	// Setup all four paths
-	mainHooksDir := filepath.Join(repo.Dir, ".git", "hooks")
+	original := "#!/bin/sh\nexit 0"
+	mustWriteFile(t, hookPath, original)
 
-	err := os.MkdirAll(mainHooksDir, 0o750)
-	if err != nil {
-		t.Fatalf("failed to create main hooks dir: %v", err)
+	// Create worktree
+	worktreeDir := t.TempDir()
+	mainRepo.AddWorktree(worktreeDir, "feature-branch")
+
+	// Run sandbox from worktree, try to write to main repo's hook
+	_, _, code := RunBinary(t, "-C", worktreeDir, "sh", "-c", "echo pwned > "+hookPath)
+
+	if code == 0 {
+		t.Error("expected non-zero exit code when writing to main repo's hook from worktree")
 	}
 
-	// Worktree gitdir is named after the worktree directory, not the branch
-	worktreeGitDir := filepath.Join(repo.Dir, ".git", "worktrees", filepath.Base(worktreeDir))
-	worktreeHooksDir := filepath.Join(worktreeGitDir, "hooks")
-
-	err = os.MkdirAll(worktreeHooksDir, 0o750)
-	if err != nil {
-		t.Fatalf("failed to create worktree hooks dir: %v", err)
-	}
-
-	// Create test files at all four paths
-	paths := map[string]string{
-		filepath.Join(mainHooksDir, "pre-commit"):     "main-hook",
-		filepath.Join(repo.Dir, ".git", "config"):     "", // already exists
-		filepath.Join(worktreeHooksDir, "pre-commit"): "worktree-hook",
-		filepath.Join(worktreeGitDir, "config"):       "worktree-config",
-	}
-
-	for path, content := range paths {
-		if content != "" { // Skip if we're using existing file
-			err = os.WriteFile(path, []byte(content), 0o644)
-			if err != nil {
-				t.Fatalf("failed to create %s: %v", path, err)
-			}
-		}
-	}
-
-	// Create CLI tester pointing to the worktree
-	c := NewCLITesterAt(t, worktreeDir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir)
-
-	// Try to write to each path
-	for path := range paths {
-		_, _, code := c.Run("bash", "-c", "echo 'hacked' >> "+path)
-		if code == 0 {
-			// Verify content wasn't actually modified
-			content, _ := os.ReadFile(path)
-			if strings.Contains(string(content), "hacked") {
-				t.Errorf("path %s was modified despite protection", path)
-			}
-		}
+	// Verify hook unchanged on host
+	content := mustReadFile(t, hookPath)
+	if content != original {
+		t.Errorf("main repo hook was modified from worktree: got %q, want %q", content, original)
 	}
 }
 
-// Test_Sandbox_Git_Cannot_Delete_Hooks verifies that hooks cannot be deleted.
-func Test_Sandbox_Git_Cannot_Delete_Hooks(t *testing.T) {
+func Test_Git_Worktree_Protects_Main_Repo_Config(t *testing.T) {
 	t.Parallel()
+	RequireWrapperMounting(t)
 
-	RequireBwrap(t)
-	RequireGit(t)
+	// Create main repo
+	mainRepo := NewGitRepo(t)
+	mainRepo.WriteFile("README.md", "# Test")
+	mainRepo.Commit("initial")
 
-	// Create a real git repo
-	repo := NewGitRepo(t)
-	repo.WriteFile("README.md", "# Test Repo\n")
-	repo.Commit("initial commit")
+	configPath := filepath.Join(mainRepo.Dir, ".git", "config")
+	original := mustReadFile(t, configPath)
 
-	// Create a hook file
-	hookPath := filepath.Join(repo.Dir, ".git", "hooks", "pre-commit")
+	// Create worktree
+	worktreeDir := t.TempDir()
+	mainRepo.AddWorktree(worktreeDir, "feature-branch")
 
-	err := os.MkdirAll(filepath.Dir(hookPath), 0o750)
-	if err != nil {
-		t.Fatalf("failed to create hooks dir: %v", err)
-	}
+	// Run sandbox from worktree, try to write to main repo's config
+	_, _, code := RunBinary(t, "-C", worktreeDir, "sh", "-c", "echo pwned >> "+configPath)
 
-	err = os.WriteFile(hookPath, []byte(testHookContent), 0o755)
-	if err != nil {
-		t.Fatalf("failed to create hook file: %v", err)
-	}
-
-	// Create CLI tester pointing to the repo
-	c := NewCLITesterAt(t, repo.Dir)
-	c.Env["HOME"] = filepath.Dir(repo.Dir)
-
-	// Try to delete the hook
-	_, _, code := c.Run("rm", hookPath)
-
-	// Should fail because .git/hooks is read-only
 	if code == 0 {
-		t.Error("expected non-zero exit code when deleting hook")
+		t.Error("expected non-zero exit code when writing to main repo's config from worktree")
 	}
 
-	// Verify the hook still exists
-	_, statErr := os.Stat(hookPath)
-	if os.IsNotExist(statErr) {
-		t.Error("hook was deleted despite protection")
+	// Verify config unchanged on host
+	content := mustReadFile(t, configPath)
+	if content != original {
+		t.Error("main repo config was modified from worktree")
+	}
+}
+
+// ============================================================================
+// E2E tests for git symlink invocations (git-upload-pack, etc.)
+//
+// Regression test for: wrapper script losing argv[0] when invoked via git-* symlink.
+// When git clone runs, it internally invokes git-upload-pack (a symlink to git).
+// Git checks argv[0] to determine behavior, so the wrapper must preserve it.
+// ============================================================================
+
+func Test_Git_Clone_Local_Path_Works(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	// Create a source repo with a commit
+	srcRepo := NewGitRepo(t)
+	srcRepo.WriteFile("README.md", "# Test\n")
+	srcRepo.Commit("initial commit")
+
+	// Clone to a bare repo (this uses git-upload-pack internally)
+	destDir := t.TempDir()
+	bareRepo := filepath.Join(destDir, "bare.git")
+
+	stdout, stderr, code := RunBinary(t,
+		"--rw", srcRepo.Dir,
+		"--rw", destDir,
+		"--",
+		"git", "clone", "--bare", srcRepo.Dir, bareRepo,
+	)
+
+	if code != 0 {
+		t.Fatalf("git clone --bare failed: exit %d\nstdout: %s\nstderr: %s",
+			code, stdout, stderr)
+	}
+
+	// Verify the clone succeeded
+	_, statErr := os.Stat(filepath.Join(bareRepo, "HEAD"))
+	if statErr != nil {
+		t.Fatalf("bare repo not created: %v", statErr)
+	}
+}
+
+// ============================================================================
+// E2E tests for policy file immutability
+//
+// The git preset policy file at /run/agent-sandbox/policies/git must be
+// immutable inside the sandbox to prevent agents from tampering with it.
+// ============================================================================
+
+func Test_Git_Policy_File_Cannot_Be_Deleted(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+
+	// Try to delete the git policy file
+	_, stderr, code := RunBinary(t, "-C", repo.Dir, "rm", "-f", "/run/agent-sandbox/policies/git")
+
+	if code == 0 {
+		t.Error("should not be able to delete policy file, expected non-zero exit code")
+	}
+
+	// Verify git still works (policy file intact)
+	_, _, gitCode := RunBinary(t, "-C", repo.Dir, "git", "status")
+	if gitCode != 0 {
+		t.Errorf("git should still work after failed rm, stderr: %s", stderr)
+	}
+}
+
+func Test_Git_Policy_File_Cannot_Be_Overwritten(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+
+	// Try to overwrite the git policy file
+	_, _, code := RunBinary(t, "-C", repo.Dir, "sh", "-c", "echo 'hacked' > /run/agent-sandbox/policies/git")
+
+	if code == 0 {
+		t.Error("should not be able to overwrite policy file, expected non-zero exit code")
+	}
+
+	// Verify git still works with original preset behavior
+	stdout, _, gitCode := RunBinary(t, "-C", repo.Dir, "git", "status")
+	if gitCode != 0 {
+		t.Error("git should still work after failed overwrite")
+	}
+
+	if stdout == "" {
+		t.Error("git status should produce output")
+	}
+}
+
+func Test_Git_Policy_File_Cannot_Be_Truncated(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+
+	// Try to truncate the git policy file
+	_, _, code := RunBinary(t, "-C", repo.Dir, "sh", "-c", "truncate -s 0 /run/agent-sandbox/policies/git")
+
+	if code == 0 {
+		t.Error("should not be able to truncate policy file, expected non-zero exit code")
+	}
+
+	// Verify git still works
+	_, _, gitCode := RunBinary(t, "-C", repo.Dir, "git", "status")
+	if gitCode != 0 {
+		t.Error("git should still work after failed truncate")
 	}
 }

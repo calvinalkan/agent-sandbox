@@ -12,7 +12,7 @@ import (
 //
 //	go build -ldflags "-X main.version=1.0.0 -X main.commit=abc123 -X main.date=2025-01-07"
 var (
-	version = "dev"
+	version = "source"
 	commit  = "none"
 	date    = "unknown"
 )
@@ -31,5 +31,6 @@ func main() {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	exitCode := Run(os.Stdin, os.Stdout, os.Stderr, os.Args, env, sigCh)
+
 	os.Exit(exitCode)
 }

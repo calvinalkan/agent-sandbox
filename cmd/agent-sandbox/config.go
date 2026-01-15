@@ -9,23 +9,55 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/pflag"
 	"github.com/tailscale/hujson"
 )
 
-// ErrDuplicateConfigFiles is returned when both .json and .jsonc config files exist.
-var ErrDuplicateConfigFiles = errors.New("duplicate config files found")
+// LoadConfigInput holds the inputs for LoadConfig.
+type LoadConfigInput struct {
+	WorkDirOverride string
+	ConfigPath      string
+	EnvVars         map[string]string
+	CLIFlags        *pflag.FlagSet
+}
 
-// ErrInvalidCommandRule is returned when a command rule has an invalid type.
-var ErrInvalidCommandRule = errors.New("command rule must be boolean or string (true, false, \"@git\", or \"/path/to/script\")")
+// Config holds the application configuration.
+type Config struct {
+	Network    *bool                  `json:"network,omitempty"`
+	Docker     *bool                  `json:"docker,omitempty"`
+	Filesystem FilesystemConfig       `json:"filesystem"`
+	Commands   map[string]CommandRule `json:"commands,omitempty"`
+
+	// Resolved (not serialized)
+	EffectiveCwd string `json:"-"`
+
+	// LoadedConfigFiles tracks which config files were loaded (for debug output).
+	// Key is the config type (global, project, explicit), value is the path.
+	LoadedConfigFiles map[string]string `json:"-"`
+
+	// Source-tracked filesystem paths for correct debug output labeling.
+	// These are populated during config loading to preserve path sources.
+	GlobalFilesystem  FilesystemConfig `json:"-"`
+	ProjectFilesystem FilesystemConfig `json:"-"`
+	CLIFilesystem     FilesystemConfig `json:"-"`
+}
+
+// FilesystemConfig holds filesystem access rules.
+type FilesystemConfig struct {
+	Presets []string `json:"presets,omitempty"`
+	Ro      []string `json:"ro,omitempty"`
+	Rw      []string `json:"rw,omitempty"`
+	Exclude []string `json:"exclude,omitempty"`
+}
 
 // CommandRuleKind represents the type of command wrapper rule.
 type CommandRuleKind int
 
 const (
-	// CommandRuleUnset indicates no rule has been set.
-	CommandRuleUnset CommandRuleKind = iota
-	// CommandRuleRaw allows the command to run without any wrapper (true in config).
-	CommandRuleRaw
+	// CommandRuleExplicitAllow allows the command to run without any wrapper (true in config).
+	// Useful to override a block from a previous config layer (e.g., project config
+	// sets "rm": true to re-enable a command blocked by global config).
+	CommandRuleExplicitAllow CommandRuleKind = iota + 1
 	// CommandRuleBlock prevents the command from running (false in config).
 	CommandRuleBlock
 	// CommandRulePreset uses a built-in smart wrapper ("@git" in config).
@@ -42,15 +74,13 @@ type CommandRule struct {
 	Value string // used for Preset (e.g., "@git") and Script (e.g., "/path/to/wrapper")
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for CommandRule.
+// UnmarshalJSON implements custom JSON unmarshaling for commandRule.
 // Accepts boolean or string values as per spec.
 func (r *CommandRule) UnmarshalJSON(data []byte) error {
-	// Check for null explicitly (json.Unmarshal would accept null for bool/string)
 	if string(data) == "null" {
-		return fmt.Errorf("%w: got %s", ErrInvalidCommandRule, string(data))
+		return fmt.Errorf("command rule must be boolean or string: got %s", string(data))
 	}
 
-	// Try string first (string must be quoted, bool cannot be)
 	var strVal string
 
 	err := json.Unmarshal(data, &strVal)
@@ -66,13 +96,12 @@ func (r *CommandRule) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	// Try boolean
 	var boolVal bool
 
 	err = json.Unmarshal(data, &boolVal)
 	if err == nil {
 		if boolVal {
-			r.Kind = CommandRuleRaw
+			r.Kind = CommandRuleExplicitAllow
 		} else {
 			r.Kind = CommandRuleBlock
 		}
@@ -82,22 +111,22 @@ func (r *CommandRule) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return fmt.Errorf("%w: got %s", ErrInvalidCommandRule, string(data))
+	return fmt.Errorf("command rule must be boolean or string: got %s", string(data))
 }
 
-// MarshalJSON implements custom JSON marshaling for CommandRule.
+// MarshalJSON implements custom JSON marshaling for commandRule.
 func (r CommandRule) MarshalJSON() ([]byte, error) {
 	var val any
 
 	switch r.Kind {
-	case CommandRuleUnset:
-		val = nil
-	case CommandRuleRaw:
+	case CommandRuleExplicitAllow:
 		val = true
 	case CommandRuleBlock:
 		val = false
 	case CommandRulePreset, CommandRuleScript:
 		val = r.Value
+	default:
+		val = nil
 	}
 
 	data, err := json.Marshal(val)
@@ -106,51 +135,6 @@ func (r CommandRule) MarshalJSON() ([]byte, error) {
 	}
 
 	return data, nil
-}
-
-// Config holds the application configuration.
-type Config struct {
-	Network    *bool                  `json:"network,omitempty"`
-	Docker     *bool                  `json:"docker,omitempty"`
-	Filesystem FilesystemConfig       `json:"filesystem"`
-	Commands   map[string]CommandRule `json:"commands,omitempty"`
-
-	// Resolved (not serialized)
-	EffectiveCwd string `json:"-"`
-
-	// LoadedConfigFiles tracks which config files were loaded (for debug output).
-	// Key is the config type (global, project, explicit), value is the path.
-	LoadedConfigFiles map[string]string `json:"-"`
-}
-
-// FilesystemConfig holds filesystem access rules.
-type FilesystemConfig struct {
-	Presets []string `json:"presets,omitempty"`
-	Ro      []string `json:"ro,omitempty"`
-	Rw      []string `json:"rw,omitempty"`
-	Exclude []string `json:"exclude,omitempty"`
-}
-
-// DefaultConfig returns the default configuration.
-func DefaultConfig() Config {
-	return Config{
-		Network: boolPtr(true),
-		Docker:  boolPtr(false),
-		Commands: map[string]CommandRule{
-			"git": {Kind: CommandRulePreset, Value: PresetGit},
-		},
-	}
-}
-
-func boolPtr(b bool) *bool {
-	return &b
-}
-
-// LoadConfigInput holds the inputs for LoadConfig.
-type LoadConfigInput struct {
-	WorkDirOverride string            // -C/--cwd flag value; if empty, os.Getwd() is used
-	ConfigPath      string            // --config flag value
-	Env             map[string]string // Environment variables (for XDG_CONFIG_HOME)
 }
 
 // LoadConfig loads configuration with the following precedence (later overrides earlier):
@@ -164,7 +148,6 @@ type LoadConfigInput struct {
 // Both .json and .jsonc files support comments via tailscale/hujson.
 // If both .json and .jsonc exist at the same location, it's an error.
 func LoadConfig(input LoadConfigInput) (Config, error) {
-	// Resolve effective working directory
 	workDir := input.WorkDirOverride
 	if workDir == "" {
 		var err error
@@ -175,7 +158,6 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 		}
 	}
 
-	// Make workDir absolute
 	if !filepath.IsAbs(workDir) {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -185,12 +167,10 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 		workDir = filepath.Join(cwd, workDir)
 	}
 
-	// Start with defaults
 	cfg := DefaultConfig()
 	cfg.LoadedConfigFiles = make(map[string]string)
 
-	// Load global config (always loaded if exists)
-	globalConfigBasePath, err := getUserConfigBasePath(input.Env)
+	globalConfigBasePath, err := getUserConfigBasePath(input.EnvVars)
 	if err != nil {
 		return Config{}, err
 	}
@@ -198,52 +178,49 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 	if globalConfigBasePath != "" {
 		globalConfigPath, findErr := findConfigFile(globalConfigBasePath, false)
 		if findErr == nil {
-			globalCfg, loadErr := loadConfigFile(globalConfigPath)
-			if loadErr == nil {
-				cfg = mergeConfigs(&cfg, &globalCfg)
-				cfg.LoadedConfigFiles["global"] = globalConfigPath
-			} else {
-				// File exists but is invalid - this is an error
+			globalCfg, loadErr := parseConfigFile(globalConfigPath)
+			if loadErr != nil {
 				return Config{}, loadErr
 			}
+			// Store global filesystem paths separately for source tracking
+			cfg.GlobalFilesystem = globalCfg.Filesystem
+			cfg = mergeConfigs(&cfg, &globalCfg)
+			cfg.LoadedConfigFiles["global"] = globalConfigPath
 		} else if !errors.Is(findErr, os.ErrNotExist) {
-			// Error finding config (e.g., both .json and .jsonc exist)
 			return Config{}, findErr
 		}
 		// If os.ErrNotExist, silently skip (per spec)
 	}
 
-	// Load project config OR --config path (not both)
 	if input.ConfigPath != "" {
-		// Explicit --config path replaces project config
 		configPath := input.ConfigPath
 		if !filepath.IsAbs(configPath) {
 			configPath = filepath.Join(workDir, configPath)
 		}
 
-		explicitCfg, err := loadConfigFile(configPath)
+		explicitCfg, err := parseConfigFile(configPath)
 		if err != nil {
 			return Config{}, err
 		}
 
+		// Store explicit config filesystem paths as "project" for source tracking
+		cfg.ProjectFilesystem = explicitCfg.Filesystem
 		cfg = mergeConfigs(&cfg, &explicitCfg)
 		cfg.LoadedConfigFiles["explicit"] = configPath
 	} else {
-		// Load project config
 		projectConfigBasePath := filepath.Join(workDir, ".agent-sandbox")
 
 		projectConfigPath, findErr := findConfigFile(projectConfigBasePath, false)
 		if findErr == nil {
-			projectCfg, loadErr := loadConfigFile(projectConfigPath)
-			if loadErr == nil {
-				cfg = mergeConfigs(&cfg, &projectCfg)
-				cfg.LoadedConfigFiles["project"] = projectConfigPath
-			} else {
-				// File exists but is invalid - this is an error
+			projectCfg, loadErr := parseConfigFile(projectConfigPath)
+			if loadErr != nil {
 				return Config{}, loadErr
 			}
+			// Store project filesystem paths separately for source tracking
+			cfg.ProjectFilesystem = projectCfg.Filesystem
+			cfg = mergeConfigs(&cfg, &projectCfg)
+			cfg.LoadedConfigFiles["project"] = projectConfigPath
 		} else if !errors.Is(findErr, os.ErrNotExist) {
-			// Error finding config (e.g., both .json and .jsonc exist)
 			return Config{}, findErr
 		}
 		// If os.ErrNotExist, silently skip (per spec: project config is optional)
@@ -251,7 +228,123 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 
 	cfg.EffectiveCwd = workDir
 
+	if input.CLIFlags != nil {
+		err := applyCLIFlags(&cfg, input.CLIFlags)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+
 	return cfg, nil
+}
+
+// --- internal helpers ---
+
+// DefaultConfig returns the default configuration.
+func DefaultConfig() Config {
+	t, f := true, false
+
+	return Config{
+		Network: &t,
+		Docker:  &f,
+		Commands: map[string]CommandRule{
+			"git": {Kind: CommandRulePreset, Value: "@git"},
+		},
+	}
+}
+
+// applyCLIFlags applies CLI flag overrides to the config.
+// This is the final layer of config merging (highest precedence).
+func applyCLIFlags(cfg *Config, flags *pflag.FlagSet) error {
+	if flags.Changed("network") {
+		val, _ := flags.GetBool("network")
+		cfg.Network = &val
+	}
+
+	if flags.Changed("docker") {
+		val, _ := flags.GetBool("docker")
+		cfg.Docker = &val
+	}
+
+	// Extract and store CLI filesystem paths for source tracking
+	var ro, rw, exclude []string
+	if flags.Changed("ro") {
+		ro, _ = flags.GetStringArray("ro")
+	}
+
+	if flags.Changed("rw") {
+		rw, _ = flags.GetStringArray("rw")
+	}
+
+	if flags.Changed("exclude") {
+		exclude, _ = flags.GetStringArray("exclude")
+	}
+
+	cfg.CLIFilesystem = FilesystemConfig{Ro: ro, Rw: rw, Exclude: exclude}
+	cfg.Filesystem.Ro = append(cfg.Filesystem.Ro, ro...)
+	cfg.Filesystem.Rw = append(cfg.Filesystem.Rw, rw...)
+	cfg.Filesystem.Exclude = append(cfg.Filesystem.Exclude, exclude...)
+
+	if flags.Changed("cmd") {
+		cmdVals, _ := flags.GetStringArray("cmd")
+
+		if cfg.Commands == nil {
+			cfg.Commands = make(map[string]CommandRule)
+		}
+
+		for _, v := range cmdVals {
+			err := parseCmdFlag(cfg.Commands, v)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// parseCmdFlag parses a single --cmd KEY=VALUE flag and adds it to the commands map.
+// Supports comma-separated values: --cmd git=true,rm=false.
+func parseCmdFlag(commands map[string]CommandRule, value string) error {
+	pairs := strings.SplitSeq(value, ",")
+
+	for pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+
+		key, val, ok := strings.Cut(pair, "=")
+		if !ok {
+			return fmt.Errorf("invalid --cmd format: expected KEY=VALUE, got %q", pair)
+		}
+
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+
+		if key == "" {
+			return fmt.Errorf("invalid --cmd format: empty key in %q", pair)
+		}
+
+		var rule CommandRule
+
+		switch val {
+		case "true":
+			rule = CommandRule{Kind: CommandRuleExplicitAllow}
+		case "false":
+			rule = CommandRule{Kind: CommandRuleBlock}
+		default:
+			if strings.HasPrefix(val, "@") {
+				rule = CommandRule{Kind: CommandRulePreset, Value: val}
+			} else {
+				rule = CommandRule{Kind: CommandRuleScript, Value: val}
+			}
+		}
+
+		commands[key] = rule
+	}
+
+	return nil
 }
 
 // findConfigFile finds a config file at the given base path.
@@ -259,7 +352,6 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 // basePath should be either the full path (for --config) or the directory + base name without extension.
 func findConfigFile(basePath string, isExplicitPath bool) (string, error) {
 	if isExplicitPath {
-		// Explicit --config path: use as-is
 		_, err := os.Stat(basePath)
 		if err != nil {
 			return "", fmt.Errorf("config file %s: %w", basePath, err)
@@ -268,14 +360,12 @@ func findConfigFile(basePath string, isExplicitPath bool) (string, error) {
 		return basePath, nil
 	}
 
-	// Check for both .json and .jsonc
 	jsonPath := basePath + ".json"
 	jsoncPath := basePath + ".jsonc"
 
 	jsonExists, jsonErr := fileExists(jsonPath)
 	jsoncExists, jsoncErr := fileExists(jsoncPath)
 
-	// Return errors that aren't "not found"
 	if jsonErr != nil && !errors.Is(jsonErr, os.ErrNotExist) {
 		return "", fmt.Errorf("checking %s: %w", jsonPath, jsonErr)
 	}
@@ -285,7 +375,7 @@ func findConfigFile(basePath string, isExplicitPath bool) (string, error) {
 	}
 
 	if jsonExists && jsoncExists {
-		return "", fmt.Errorf("%w: both %s and %s exist; remove one", ErrDuplicateConfigFiles, jsonPath, jsoncPath)
+		return "", fmt.Errorf("duplicate config files found: both %s and %s exist; remove one", jsonPath, jsoncPath)
 	}
 
 	if jsonExists {
@@ -319,9 +409,9 @@ func fileExists(path string) (bool, error) {
 	return true, nil
 }
 
-// loadConfigFile loads and parses a JSON/JSONC config file.
+// parseConfigFile loads and parses a JSON/JSONC config file.
 // Both .json and .jsonc files support comments via hujson.
-func loadConfigFile(path string) (Config, error) {
+func parseConfigFile(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("reading config %s: %w", path, err)

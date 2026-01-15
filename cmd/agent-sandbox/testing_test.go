@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,49 +14,64 @@ import (
 	"time"
 )
 
-// ============================================================================
-// Test binary management - build once, use in all tests
-// ============================================================================
+const gitCommand = "git"
 
-// osLinux is the GOOS value for Linux, defined as a constant to satisfy goconst.
-const osLinux = "linux"
+// ============================================================================
+// Test binary helpers
+//
+// These helpers spawn the compiled agent-sandbox binary as a subprocess.
+// Use when you need to test the binary from the OUTSIDE, such as:
+//   - Spawning a sandbox and checking behavior INSIDE it
+//   - Testing nested sandbox scenarios (sandbox within sandbox)
+//   - Testing the "check" command which detects if we're in a sandbox
+//
+// For most tests, prefer CLI.Run() which calls the Run() function directly
+// in-process - it's faster and easier to debug.
+// ============================================================================
 
 // testBinary holds the path to the compiled agent-sandbox binary.
-// Set by TestMain for tests that need the real binary.
 var testBinary string
 
 // TestMain builds the agent-sandbox binary once for all tests.
 func TestMain(m *testing.M) {
-	// Build the binary once for all tests
 	tmpDir, err := os.MkdirTemp("", "agent-sandbox-test-")
 	if err != nil {
-		log.Fatalf("failed to create temp dir for test binary: %v", err)
+		fmt.Fprintf(os.Stderr, "failed to create temp dir for test binary: %v\n", err)
+		os.Exit(1)
 	}
 
 	testBinary = filepath.Join(tmpDir, "agent-sandbox")
 
-	cmd := exec.Command("go", "build", "-o", testBinary, ".")
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		_ = os.RemoveAll(tmpDir)
+
+		fmt.Fprintln(os.Stderr, "failed to locate test source directory")
+		os.Exit(1)
+	}
+
+	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+
+	cmd := exec.Command("go", "build", "-o", testBinary, "./cmd/agent-sandbox")
+	cmd.Dir = moduleRoot
 	cmd.Stderr = os.Stderr
 
 	err = cmd.Run()
 	if err != nil {
-		// Clean up temp dir on build failure
 		_ = os.RemoveAll(tmpDir)
 
-		log.Fatalf("failed to build test binary: %v", err)
+		fmt.Fprintf(os.Stderr, "failed to build test binary: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Run tests
 	code := m.Run()
 
-	// Clean up
 	_ = os.RemoveAll(tmpDir)
 
 	os.Exit(code)
 }
 
 // GetTestBinaryPath returns the path to the compiled agent-sandbox binary.
-// Skips the test if the binary is not available.
 func GetTestBinaryPath(t *testing.T) string {
 	t.Helper()
 
@@ -68,9 +82,8 @@ func GetTestBinaryPath(t *testing.T) string {
 	return testBinary
 }
 
-// RunBinary executes the compiled agent-sandbox binary with the given args.
+// RunBinary spawns the compiled agent-sandbox binary as a subprocess.
 // Returns stdout, stderr, and exit code.
-// Use this for tests that need the real binary (e.g., check inside sandbox).
 func RunBinary(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 
@@ -95,9 +108,7 @@ func RunBinary(t *testing.T, args ...string) (string, string, int) {
 	return outBuf.String(), errBuf.String(), code
 }
 
-// RunBinaryWithEnv executes the compiled binary with custom environment.
-// Env is a map of key=value pairs that will be set in addition to the
-// minimal required environment (PATH).
+// RunBinaryWithEnv spawns the compiled binary with custom environment.
 func RunBinaryWithEnv(t *testing.T, env map[string]string, args ...string) (string, string, int) {
 	t.Helper()
 
@@ -109,12 +120,10 @@ func RunBinaryWithEnv(t *testing.T, env map[string]string, args ...string) (stri
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 
-	// Build environment from map
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 
-	// Ensure PATH is always set
 	if _, ok := env["PATH"]; !ok {
 		cmd.Env = append(cmd.Env, "PATH="+os.Getenv("PATH"))
 	}
@@ -133,37 +142,18 @@ func RunBinaryWithEnv(t *testing.T, env map[string]string, args ...string) (stri
 }
 
 // ============================================================================
-// Skip helpers for platform and dependency checks
+// Skip helpers
 // ============================================================================
 
-// RequireLinux skips the test if not running on Linux.
-func RequireLinux(t *testing.T) {
+// RequireWrapperMounting skips the test if running inside a sandbox.
+// Use for tests that verify wrapper mounting behavior, which only happens
+// when spawning a new sandbox from outside.
+func RequireWrapperMounting(t *testing.T) {
 	t.Helper()
 
-	if runtime.GOOS != osLinux {
-		t.Skipf("test requires Linux, running on %s", runtime.GOOS)
-	}
-}
-
-// RequireBwrap skips the test if bwrap is not installed.
-func RequireBwrap(t *testing.T) {
-	t.Helper()
-
-	RequireLinux(t)
-
-	_, err := exec.LookPath("bwrap")
-	if err != nil {
-		t.Skip("test requires bwrap (bubblewrap), not installed")
-	}
-}
-
-// RequireGit skips the test if git is not installed.
-func RequireGit(t *testing.T) {
-	t.Helper()
-
-	_, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("test requires git, not installed")
+	_, err := os.Stat(sandboxBinaryPath)
+	if err == nil {
+		t.Skip("test requires wrapper mounting (only works outside sandbox)")
 	}
 }
 
@@ -173,58 +163,42 @@ func RequireDocker(t *testing.T) {
 
 	_, err := exec.LookPath("docker")
 	if err != nil {
-		t.Skip("test requires docker, not installed")
+		t.Skip("test requires docker")
 	}
 
-	// Check if docker daemon is running
-	cmd := exec.Command("docker", "info")
-
-	err = cmd.Run()
+	err = exec.Command("docker", "info").Run()
 	if err != nil {
 		t.Skip("test requires docker daemon to be running")
 	}
 }
 
-// CLI provides a clean interface for running CLI commands in tests.
-// It manages a temp directory and environment variables.
+// ============================================================================
+// CLI tester
+//
+// Runs the agent-sandbox CLI in-process by calling the Run() function directly.
+// This is faster than spawning a subprocess and easier to debug.
+//
+// Use this for most tests. Only use RunBinary() when you need to test behavior
+// that requires actually being inside a sandbox (e.g., nested sandboxes).
+// ============================================================================
+
+// CLI runs agent-sandbox commands in-process with a managed test environment.
 type CLI struct {
 	t   *testing.T
 	Dir string
 	Env map[string]string
 }
 
-// systemPath returns a clean PATH containing only system binary directories.
-// This avoids interference from wrapper scripts in development environments.
+// systemPath returns a minimal PATH with only system binary directories.
 func systemPath() string {
 	return "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
 }
 
-// NewCLITester creates a new test CLI with a temp directory.
-// The environment is pre-seeded with HOME, PATH, and TMPDIR.
-// TMPDIR points to a separate writable directory because HOME==WorkDir
-// ends up read-only due to specificity rules (ro wins over rw).
+// NewCLITester creates a CLI with a fresh temp directory as HOME and working dir.
 func NewCLITester(t *testing.T) *CLI {
 	t.Helper()
 
 	dir := t.TempDir()
-	tmpDir := t.TempDir() // Separate dir for TMPDIR (always writable in sandbox)
-
-	return &CLI{
-		t:   t,
-		Dir: dir,
-		Env: map[string]string{
-			"HOME":   dir,
-			"PATH":   systemPath(),
-			"TMPDIR": tmpDir,
-		},
-	}
-}
-
-// NewCLITesterAt creates a CLI tester that runs from a specific directory.
-// The environment is pre-seeded with HOME, PATH, and TMPDIR.
-func NewCLITesterAt(t *testing.T, dir string) *CLI {
-	t.Helper()
-
 	tmpDir := t.TempDir()
 
 	return &CLI{
@@ -238,19 +212,27 @@ func NewCLITesterAt(t *testing.T, dir string) *CLI {
 	}
 }
 
-// TempFile returns a unique temp file path that is writable inside the sandbox.
-// The file does not exist yet - caller is responsible for creation.
-func (c *CLI) TempFile(name string) string {
-	return filepath.Join(c.Env["TMPDIR"], name)
+// NewCLITesterAt creates a CLI that uses the specified directory as HOME and working dir.
+func NewCLITesterAt(t *testing.T, dir string) *CLI {
+	t.Helper()
+
+	return &CLI{
+		t:   t,
+		Dir: dir,
+		Env: map[string]string{
+			"HOME":   dir,
+			"PATH":   systemPath(),
+			"TMPDIR": t.TempDir(),
+		},
+	}
 }
 
-// Run executes the CLI with the given args and returns stdout, stderr, and exit code.
-// Args should not include "agent-sandbox" or "--cwd" - those are added automatically.
+// Run executes the CLI and returns stdout, stderr, and exit code.
 func (c *CLI) Run(args ...string) (string, string, int) {
 	return c.RunWithInput(nil, args...)
 }
 
-// RunInDir executes the CLI in a specific directory.
+// RunInDir executes the CLI with a different working directory.
 func (c *CLI) RunInDir(dir string, args ...string) (string, string, int) {
 	var outBuf, errBuf bytes.Buffer
 
@@ -260,7 +242,7 @@ func (c *CLI) RunInDir(dir string, args ...string) (string, string, int) {
 	return outBuf.String(), errBuf.String(), code
 }
 
-// RunWithInput executes the CLI with stdin and args.
+// RunWithInput executes the CLI with stdin.
 // stdin can be nil, an io.Reader, or a []string (joined with newlines).
 func (c *CLI) RunWithInput(stdin any, args ...string) (string, string, int) {
 	var inReader io.Reader
@@ -273,7 +255,7 @@ func (c *CLI) RunWithInput(stdin any, args ...string) (string, string, int) {
 	case []string:
 		inReader = strings.NewReader(strings.Join(v, "\n"))
 	default:
-		panic(fmt.Sprintf("RunWithInput: stdin must be nil, io.Reader, or []string, got %T", stdin))
+		panic(fmt.Sprintf("stdin must be nil, io.Reader, or []string, got %T", stdin))
 	}
 
 	var outBuf, errBuf bytes.Buffer
@@ -284,9 +266,7 @@ func (c *CLI) RunWithInput(stdin any, args ...string) (string, string, int) {
 	return outBuf.String(), errBuf.String(), code
 }
 
-// RunWithSignal executes the CLI with a signal channel for cancellation testing.
-// Returns a channel that receives the exit code when the command completes.
-// stdout/stderr are discarded to avoid race conditions with signal handler output.
+// RunWithSignal executes the CLI with a signal channel for testing cancellation.
 func (c *CLI) RunWithSignal(sigCh chan os.Signal, args ...string) <-chan int {
 	done := make(chan int, 1)
 
@@ -300,8 +280,7 @@ func (c *CLI) RunWithSignal(sigCh chan os.Signal, args ...string) <-chan int {
 	return done
 }
 
-// MustRun executes the CLI and fails the test if the command returns non-zero.
-// Returns trimmed stdout on success.
+// MustRun executes the CLI and fails the test if the command fails.
 func (c *CLI) MustRun(args ...string) string {
 	c.t.Helper()
 
@@ -314,28 +293,31 @@ func (c *CLI) MustRun(args ...string) string {
 }
 
 // MustFail executes the CLI and fails the test if the command succeeds.
-// Returns trimmed stderr.
 func (c *CLI) MustFail(args ...string) string {
 	c.t.Helper()
 
 	stdout, stderr, code := c.Run(args...)
 	if code == 0 {
-		c.t.Fatalf("command %v should have failed but succeeded\nstdout: %s", args, stdout)
+		c.t.Fatalf("command %v should have failed\nstdout: %s", args, stdout)
 	}
 
 	return strings.TrimSpace(stderr)
 }
 
-// WriteFile writes content to a file in the test directory.
+// TempFile returns a path to a temp file that is writable inside the sandbox.
+func (c *CLI) TempFile(name string) string {
+	return filepath.Join(c.Env["TMPDIR"], name)
+}
+
+// WriteFile writes content to a file relative to the test directory.
 func (c *CLI) WriteFile(relPath, content string) {
 	c.t.Helper()
 
 	path := filepath.Join(c.Dir, relPath)
-	dir := filepath.Dir(path)
 
-	err := os.MkdirAll(dir, 0o750)
+	err := os.MkdirAll(filepath.Dir(path), 0o750)
 	if err != nil {
-		c.t.Fatalf("failed to create dir %s: %v", dir, err)
+		c.t.Fatalf("failed to create dir: %v", err)
 	}
 
 	err = os.WriteFile(path, []byte(content), 0o644)
@@ -344,18 +326,15 @@ func (c *CLI) WriteFile(relPath, content string) {
 	}
 }
 
-// WriteExecutable writes an executable script to a file in the test directory.
-// Used for creating hook scripts that need to be executable.
-// Uses explicit Open/Write/Sync/Close to avoid "text file busy" errors.
+// WriteExecutable writes an executable script to a file.
 func (c *CLI) WriteExecutable(relPath, content string) {
 	c.t.Helper()
 
 	path := filepath.Join(c.Dir, relPath)
-	dir := filepath.Dir(path)
 
-	err := os.MkdirAll(dir, 0o750)
+	err := os.MkdirAll(filepath.Dir(path), 0o750)
 	if err != nil {
-		c.t.Fatalf("failed to create dir %s: %v", dir, err)
+		c.t.Fatalf("failed to create dir: %v", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
@@ -382,18 +361,15 @@ func (c *CLI) WriteExecutable(relPath, content string) {
 		c.t.Fatalf("failed to close executable %s: %v", relPath, err)
 	}
 
-	// Brief sleep to ensure filesystem has fully released the file.
-	// This works around "text file busy" errors on some systems.
+	// Brief sleep to avoid "text file busy" errors on some systems.
 	time.Sleep(10 * time.Millisecond)
 }
 
-// ReadFile reads content from a file in the test directory.
+// ReadFile reads content from a file relative to the test directory.
 func (c *CLI) ReadFile(relPath string) string {
 	c.t.Helper()
 
-	path := filepath.Join(c.Dir, relPath)
-
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(filepath.Join(c.Dir, relPath))
 	if err != nil {
 		c.t.Fatalf("failed to read file %s: %v", relPath, err)
 	}
@@ -401,15 +377,14 @@ func (c *CLI) ReadFile(relPath string) string {
 	return string(content)
 }
 
-// FileExists returns true if the file exists in the test directory.
+// FileExists returns true if the file exists relative to the test directory.
 func (c *CLI) FileExists(relPath string) bool {
-	path := filepath.Join(c.Dir, relPath)
-	_, err := os.Stat(path)
+	_, err := os.Stat(filepath.Join(c.Dir, relPath))
 
 	return err == nil
 }
 
-// ReadFileAt reads content from a file at an absolute base directory.
+// ReadFileAt reads content from a file at an absolute path.
 func (c *CLI) ReadFileAt(baseDir, relPath string) string {
 	c.t.Helper()
 
@@ -423,18 +398,55 @@ func (c *CLI) ReadFileAt(baseDir, relPath string) string {
 	return string(content)
 }
 
-// FileExistsAt returns true if the file exists at an absolute base directory.
-func (c *CLI) FileExistsAt(baseDir, relPath string) bool {
-	path := filepath.Join(baseDir, relPath)
-	_, err := os.Stat(path)
+// FileExistsAt returns true if the file exists at an absolute path.
+func (*CLI) FileExistsAt(baseDir, relPath string) bool {
+	_, err := os.Stat(filepath.Join(baseDir, relPath))
 
 	return err == nil
 }
 
+// ============================================================================
+// Misc test helpers
+// ============================================================================
+
+// mustMkdir creates a directory, failing the test if it fails.
+func mustMkdir(t *testing.T, path string) {
+	t.Helper()
+
+	err := os.MkdirAll(path, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mustWriteFile writes content to a file, failing the test if it fails.
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+
+	err := os.WriteFile(path, []byte(content), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mustReadFile reads content from a file, failing the test if it fails.
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(content)
+}
+
+// ============================================================================
+// Assertions
+// ============================================================================
+
 // stripANSI removes ANSI escape codes from a string.
-// Used to normalize output for comparison regardless of TTY state.
 func stripANSI(s string) string {
-	// Simple approach: remove sequences starting with ESC[ and ending with m
 	result := s
 	for {
 		start := strings.Index(result, "\033[")
@@ -454,60 +466,50 @@ func stripANSI(s string) string {
 }
 
 // AssertContains fails the test if content doesn't contain substr.
-// Strips ANSI codes from content before comparison to handle TTY/non-TTY differences.
 func AssertContains(t *testing.T, content, substr string) {
 	t.Helper()
 
-	cleaned := stripANSI(content)
-	if !strings.Contains(cleaned, substr) {
-		t.Errorf("content should contain %q\ncontent:\n%s", substr, content)
+	if !strings.Contains(stripANSI(content), substr) {
+		t.Errorf("expected %q in:\n%s", substr, content)
 	}
 }
 
 // AssertNotContains fails the test if content contains substr.
-// Strips ANSI codes from content before comparison to handle TTY/non-TTY differences.
 func AssertNotContains(t *testing.T, content, substr string) {
 	t.Helper()
 
-	cleaned := stripANSI(content)
-	if strings.Contains(cleaned, substr) {
-		t.Errorf("content should NOT contain %q\ncontent:\n%s", substr, content)
+	if strings.Contains(stripANSI(content), substr) {
+		t.Errorf("unexpected %q in:\n%s", substr, content)
 	}
 }
 
 // ============================================================================
-// Git test helpers
+// Git helpers
 // ============================================================================
 
-// GitRepo provides helpers for creating and managing git repositories in tests.
+// GitRepo provides helpers for creating git repositories in tests.
 type GitRepo struct {
 	t   *testing.T
 	Dir string
 }
 
 // NewGitRepo creates a new git repository in a temp directory.
-// Skips the test if git is not installed.
 func NewGitRepo(t *testing.T) *GitRepo {
 	t.Helper()
-
-	RequireGit(t)
 
 	dir := t.TempDir()
 	repo := &GitRepo{t: t, Dir: dir}
 	repo.run("init")
 	repo.run("config", "user.email", "test@test.com")
 	repo.run("config", "user.name", "Test User")
-	repo.run("config", "commit.gpgsign", "false") // Disable GPG signing for tests
+	repo.run("config", "commit.gpgsign", "false")
 
 	return repo
 }
 
 // NewGitRepoAt creates a git repository at the specified directory.
-// Skips the test if git is not installed.
 func NewGitRepoAt(t *testing.T, dir string) *GitRepo {
 	t.Helper()
-
-	RequireGit(t)
 
 	err := os.MkdirAll(dir, 0o750)
 	if err != nil {
@@ -518,7 +520,7 @@ func NewGitRepoAt(t *testing.T, dir string) *GitRepo {
 	repo.run("init")
 	repo.run("config", "user.email", "test@test.com")
 	repo.run("config", "user.name", "Test User")
-	repo.run("config", "commit.gpgsign", "false") // Disable GPG signing for tests
+	repo.run("config", "commit.gpgsign", "false")
 
 	return repo
 }
@@ -528,11 +530,10 @@ func (r *GitRepo) WriteFile(relPath, content string) {
 	r.t.Helper()
 
 	path := filepath.Join(r.Dir, relPath)
-	dir := filepath.Dir(path)
 
-	err := os.MkdirAll(dir, 0o750)
+	err := os.MkdirAll(filepath.Dir(path), 0o750)
 	if err != nil {
-		r.t.Fatalf("failed to create dir %s: %v", dir, err)
+		r.t.Fatalf("failed to create dir: %v", err)
 	}
 
 	err = os.WriteFile(path, []byte(content), 0o644)
@@ -541,7 +542,7 @@ func (r *GitRepo) WriteFile(relPath, content string) {
 	}
 }
 
-// Commit stages all files and creates a commit with the given message.
+// Commit stages all files and creates a commit.
 func (r *GitRepo) Commit(message string) {
 	r.t.Helper()
 
@@ -549,95 +550,20 @@ func (r *GitRepo) Commit(message string) {
 	r.run("commit", "-m", message)
 }
 
-// AddWorktree creates a new worktree at the specified path with a new branch.
+// AddWorktree creates a new worktree with a new branch.
 func (r *GitRepo) AddWorktree(worktreeDir, branchName string) {
 	r.t.Helper()
 
 	r.run("worktree", "add", worktreeDir, "-b", branchName)
 }
 
-// gitEnvExcludes lists git environment variables that should be excluded
-// when running git commands in tests. These variables are inherited from
-// the parent process (e.g., pre-commit hooks) and can interfere with
-// git operations in isolated test directories.
-var gitEnvExcludes = map[string]bool{
-	"GIT_DIR":                            true,
-	"GIT_WORK_TREE":                      true,
-	"GIT_INDEX_FILE":                     true,
-	"GIT_OBJECT_DIRECTORY":               true,
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES":   true,
-	"GIT_CONFIG":                         true,
-	"GIT_CONFIG_GLOBAL":                  true,
-	"GIT_COMMON_DIR":                     true,
-	"GIT_CEILING_DIRECTORIES":            true,
-	"GIT_DISCOVERY_ACROSS_FILESYSTEM":    true,
-	"GIT_QUARANTINE_PATH":                true,
-	"GIT_PUSH_OPTION_COUNT":              true,
-	"GIT_AUTHOR_NAME":                    true,
-	"GIT_AUTHOR_EMAIL":                   true,
-	"GIT_AUTHOR_DATE":                    true,
-	"GIT_COMMITTER_NAME":                 true,
-	"GIT_COMMITTER_EMAIL":                true,
-	"GIT_COMMITTER_DATE":                 true,
-	"GIT_LITERAL_PATHSPECS":              true,
-	"GIT_GLOB_PATHSPECS":                 true,
-	"GIT_NOGLOB_PATHSPECS":               true,
-	"GIT_ICASE_PATHSPECS":                true,
-	"GIT_REFLOG_ACTION":                  true,
-	"GIT_SEQUENCE_EDITOR":                true,
-	"GIT_SSH":                            true,
-	"GIT_SSH_COMMAND":                    true,
-	"GIT_ASKPASS":                        true,
-	"GIT_TERMINAL_PROMPT":                true,
-	"GIT_FLUSH":                          true,
-	"GIT_TRACE":                          true,
-	"GIT_TRACE_PACK_ACCESS":              true,
-	"GIT_TRACE_PACKET":                   true,
-	"GIT_TRACE_PERFORMANCE":              true,
-	"GIT_TRACE_SETUP":                    true,
-	"GIT_TRACE_SHALLOW":                  true,
-	"GIT_TRACE_CURL":                     true,
-	"GIT_TRACE_CURL_NO_DATA":             true,
-	"GIT_TRACE2":                         true,
-	"GIT_TRACE2_EVENT":                   true,
-	"GIT_TRACE2_PERF":                    true,
-	"GIT_REDACT_COOKIES":                 true,
-	"GIT_CURL_VERBOSE":                   true,
-	"GIT_DIFF_OPTS":                      true,
-	"GIT_EXTERNAL_DIFF":                  true,
-	"GIT_DIFF_PATH_COUNTER":              true,
-	"GIT_DIFF_PATH_TOTAL":                true,
-	"GIT_MERGE_VERBOSITY":                true,
-	"GIT_PAGER":                          true,
-	"GIT_PROGRESS_DELAY":                 true,
-	"GIT_DEFAULT_HASH":                   true,
-	"GIT_ALLOW_PROTOCOL":                 true,
-	"GIT_PROTOCOL_FROM_USER":             true,
-	"GIT_OPTIONAL_LOCKS":                 true,
-	"GIT_CLONE_PROTECTION_ACTIVE":        true,
-	"GIT_EXEC_PATH":                      true,
-	"GIT_TEMPLATE_DIR":                   true,
-	"GIT_NO_REPLACE_OBJECTS":             true,
-	"GIT_REPLACE_REF_BASE":               true,
-	"GIT_PREFIX":                         true,
-	"GIT_SHALLOW_FILE":                   true,
-	"GIT_NAMESPACE":                      true,
-	"GIT_ATTR_SOURCE":                    true,
-	"GIT_INTERNAL_GETTEXT_TEST_FALLBACK": true,
-	"GIT_INTERNAL_GETTEXT_SH_SCHEME":     true,
-}
-
-// cleanGitEnv returns a copy of os.Environ() with git-related variables removed.
+// cleanGitEnv returns os.Environ() with GIT_* variables removed.
 func cleanGitEnv() []string {
 	var clean []string
 
 	for _, env := range os.Environ() {
-		key := env
-		if before, _, ok := strings.Cut(env, "="); ok {
-			key = before
-		}
-
-		if !gitEnvExcludes[key] {
+		key, _, _ := strings.Cut(env, "=")
+		if !strings.HasPrefix(key, "GIT_") {
 			clean = append(clean, env)
 		}
 	}
@@ -645,174 +571,33 @@ func cleanGitEnv() []string {
 	return clean
 }
 
-// run executes a git command in the repository directory.
-// Skips the test if git is not available, fails on other errors.
-// Clears git environment variables to prevent interference from pre-commit hooks.
+// findRealGitBinary returns the path to the real git binary.
+// When inside a sandbox, wrappers may block certain git operations.
+func findRealGitBinary() string {
+	const realGit = "/run/agent-sandbox/bin/git"
+
+	_, statErr := os.Stat(realGit)
+	if statErr == nil {
+		return realGit
+	}
+
+	return gitCommand
+}
+
 func (r *GitRepo) run(args ...string) {
 	r.t.Helper()
 
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command(findRealGitBinary(), args...)
 	cmd.Dir = r.Dir
 	cmd.Env = cleanGitEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Check if git is not installed
 		var execErr *exec.Error
 		if errors.As(err, &execErr) && errors.Is(execErr.Err, exec.ErrNotFound) {
-			r.t.Skipf("git not installed, skipping test")
+			r.t.Skipf("git not installed")
 		}
 
 		r.t.Fatalf("git %v failed: %v\noutput: %s", args, err, output)
 	}
-}
-
-// ============================================================================
-// Test helper tests
-// ============================================================================
-
-func Test_GetTestBinaryPath_Returns_Compiled_Binary_Path(t *testing.T) {
-	t.Parallel()
-
-	path := GetTestBinaryPath(t)
-
-	if path == "" {
-		t.Fatal("GetBinaryPath returned empty string")
-	}
-
-	// Verify the file exists
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("binary path %q does not exist: %v", path, err)
-	}
-
-	// Verify it's executable (not a directory)
-	if info.IsDir() {
-		t.Fatalf("binary path %q is a directory", path)
-	}
-}
-
-func Test_RunBinary_Executes_Binary_And_Returns_Output(t *testing.T) {
-	t.Parallel()
-
-	stdout, _, exitCode := RunBinary(t, "--help")
-
-	if exitCode != 0 {
-		t.Errorf("expected exit code 0 for --help, got %d", exitCode)
-	}
-
-	if !strings.Contains(stdout, "agent-sandbox") {
-		t.Errorf("expected stdout to contain 'agent-sandbox', got: %s", stdout)
-	}
-}
-
-func Test_RunBinary_Returns_NonZero_Exit_Code_On_Error(t *testing.T) {
-	t.Parallel()
-
-	_, stderr, exitCode := RunBinary(t, "--unknown-flag")
-
-	if exitCode == 0 {
-		t.Error("expected non-zero exit code for unknown flag")
-	}
-
-	if !strings.Contains(stderr, "unknown flag") {
-		t.Errorf("expected stderr to contain 'unknown flag', got: %s", stderr)
-	}
-}
-
-func Test_RunBinaryWithEnv_Passes_Custom_Environment(t *testing.T) {
-	t.Parallel()
-
-	// Use a custom HOME that doesn't exist - exec should fail
-	env := map[string]string{
-		"HOME": "/nonexistent/path/for/testing",
-	}
-
-	_, stderr, exitCode := RunBinaryWithEnv(t, env, "exec", "echo", "hello")
-
-	// Should fail because HOME doesn't exist
-	if exitCode == 0 {
-		t.Error("expected non-zero exit code when HOME doesn't exist")
-	}
-
-	if !strings.Contains(stderr, "cannot determine home directory") {
-		t.Errorf("expected error about home directory, got: %s", stderr)
-	}
-}
-
-func Test_NewCLITester_Seeds_Default_Env(t *testing.T) {
-	t.Parallel()
-
-	c := NewCLITester(t)
-
-	// Verify HOME is set to the temp dir
-	if c.Env["HOME"] != c.Dir {
-		t.Errorf("expected HOME=%q, got %q", c.Dir, c.Env["HOME"])
-	}
-
-	// Verify PATH is set
-	if c.Env["PATH"] == "" {
-		t.Error("expected PATH to be set")
-	}
-}
-
-func Test_NewCLITesterAt_Seeds_Default_Env(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	c := NewCLITesterAt(t, dir)
-
-	// Verify HOME is set to the specified dir
-	if c.Env["HOME"] != dir {
-		t.Errorf("expected HOME=%q, got %q", dir, c.Env["HOME"])
-	}
-
-	// Verify PATH is set
-	if c.Env["PATH"] == "" {
-		t.Error("expected PATH to be set")
-	}
-}
-
-func Test_RequireLinux_Does_Not_Skip_On_Linux(t *testing.T) {
-	t.Parallel()
-
-	if runtime.GOOS != osLinux {
-		t.Skip("test only runs on Linux")
-	}
-
-	// Should not skip on Linux
-	RequireLinux(t)
-	// If we get here, RequireLinux didn't skip
-}
-
-func Test_RequireGit_Does_Not_Skip_When_Git_Available(t *testing.T) {
-	t.Parallel()
-
-	// First check if git is available
-	_, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not installed")
-	}
-
-	// Should not skip when git is available
-	RequireGit(t)
-	// If we get here, RequireGit didn't skip
-}
-
-func Test_RequireBwrap_Does_Not_Skip_When_Bwrap_Available(t *testing.T) {
-	t.Parallel()
-
-	if runtime.GOOS != osLinux {
-		t.Skip("bwrap only available on Linux")
-	}
-
-	// First check if bwrap is available
-	_, err := exec.LookPath("bwrap")
-	if err != nil {
-		t.Skip("bwrap not installed")
-	}
-
-	// Should not skip when bwrap is available
-	RequireBwrap(t)
-	// If we get here, RequireBwrap didn't skip
 }

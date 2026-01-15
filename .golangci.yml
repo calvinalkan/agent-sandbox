@@ -4,6 +4,30 @@ run:
   timeout: 5m
 
 linters:
+  # ============================================================================
+  # Disabled linters (with reasons)
+  # ============================================================================
+  # - cyclop            # complexity: too noisy, flags test helpers
+  # - exhaustruct       # zero values are idiomatic in Go
+  # - funlen            # complexity: too noisy, flags test helpers
+  # - gochecknoglobals  # registries, version info, etc.
+  # - gocognit          # complexity: too noisy, flags test helpers
+  # - gocyclo           # complexity: same as cyclop, pick one
+  # - goheader          # no copyright headers needed
+  # - lll               # line length: too noisy
+  # - maintidx          # complexity: too noisy
+  # - mnd               # magic numbers: too noisy, forces useless constants
+  # - nestif            # complexity: too noisy
+  # - err113            # forces sentinel errors for all dynamic errors; not all
+  #                     # errors are API - some are just descriptive messages for
+  #                     # programming bugs or internal invariant violations that
+  #                     # callers should never errors.Is() check
+  # - max-control-nesting # stylistic: arbitrary nesting limit
+  # - max-public-structs  # arbitrary limit on public structs per package
+
+  # ============================================================================
+  # Enabled linters
+  # ============================================================================
   enable:
     - asasalint
     - asciicheck
@@ -13,14 +37,13 @@ linters:
     - containedctx
     - contextcheck
     - copyloopvar
-    # - cyclop
     - decorder
+    - depguard
     - dogsled
     - dupl
     - dupword
     - durationcheck
     - embeddedstructfieldcheck
-    - err113
     - errcheck
     - errchkjson
     - errname
@@ -31,19 +54,15 @@ linters:
     - forbidigo
     - forcetypeassert
     - funcorder
-    # - funlen
     - gocheckcompilerdirectives
-    # - gochecknoglobals
     - gochecknoinits
     - gochecksumtype
-    # - gocognit
     - goconst
     - gocritic
-    # - gocyclo
     - godoclint
     - godot
     - godox
-    # - gomoddirectives
+    - gomoddirectives
     - gomodguard
     - goprintffuncname
     - gosec
@@ -58,21 +77,18 @@ linters:
     - intrange
     - iotamixing
     - ireturn
-    # - lll
     - loggercheck
-    # - maintidx
     - makezero
     - mirror
     - misspell
-    # - mnd
+    - modernize
     - musttag
     - nakedret
-    # - nestif
     - nilerr
     - nilnesserr
     - nilnil
     - nlreturn
-    # - noctx
+    - noctx
     - noinlineerr
     - nolintlint
     - nonamedreturns
@@ -92,7 +108,7 @@ linters:
     - sqlclosecheck
     - staticcheck
     - tagalign
-    # - tagliatelle
+    - tagliatelle
     - testableexamples
     - testifylint
     - testpackage
@@ -111,19 +127,76 @@ linters:
     - wsl_v5
     - zerologlint
   settings:
-    cyclop:
-      max-complexity: 15
-    gocyclo:
-      min-complexity: 15
-    gocognit:
-      min-complexity: 20
-    funlen:
-      lines: 80
-      statements: 50
-    lll:
-      line-length: 120
-    nestif:
-      min-complexity: 5
+    errcheck:
+      check-type-assertions: true
+      check-blank: false # allow _ = err to explicitly ignore errors
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        # pflag.Get* can't fail if the flag was defined
+        - (*github.com/spf13/pflag.FlagSet).GetBool
+        - (*github.com/spf13/pflag.FlagSet).GetString
+        - (*github.com/spf13/pflag.FlagSet).GetStringArray
+        # best-effort directory enumeration
+        - path/filepath.WalkDir
+        # can't error when path is under base (only errors if no common base)
+        - path/filepath.Rel
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # micro-optimization, too noisy
+    staticcheck:
+      checks: ["all"]
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    testifylint:
+      enable-all: true
+    unparam:
+      check-exported: true
+    prealloc:
+      for-loops: true
+    copyloopvar:
+      check-alias: true
+    exhaustive:
+      default-signifies-exhaustive: true
+    fatcontext:
+      check-struct-pointers: true
+    goconst:
+      numbers: true
+      find-duplicates: true
+    usestdlibvars:
+      time-month: true
+      time-layout: true
+      crypto-hash: true
+    usetesting:
+      os-temp-dir: true
+      context-background: true
+      context-todo: true
+    perfsprint:
+      err-error: true
+    predeclared:
+      qualified-name: true
+    unconvert:
+      fast-math: true
+      safe: true
+    wrapcheck: {}
+    sloglint:
+      static-msg: true
+      no-raw-keys: true
+    tagalign:
+      strict: true
+    makezero:
+      always: true
+    nilnil:
+      detect-opposite: true
+    ineffassign:
+      check-escaping-errors: true
+    loggercheck:
+      require-string-key: true
+      no-printf-like: true
+
     nakedret:
       max-func-lines: 0
     varnamelen:
@@ -131,19 +204,57 @@ linters:
       ignore-names:
         - i
     gocritic:
-      enabled-tags:
-        - diagnostic
-        - style
-        - performance
-        - experimental
-        - opinionated
+      enable-all: true
       disabled-checks:
-        - paramTypeCombine
-        - unnamedResult
+        - paramTypeCombine # style preference
+        - unnamedResult # style preference
+    revive:
+      enable-all-rules: true
+      rules:
+        - name: line-length-limit
+          disabled: true # use lll instead (configured at 200)
+        - name: function-length
+          disabled: true # duplicates funlen (disabled globally)
+        - name: add-constant
+          disabled: true # duplicates mnd (disabled globally)
+        - name: cognitive-complexity
+          disabled: true # duplicates gocognit (disabled globally)
+        - name: cyclomatic
+          disabled: true # duplicates cyclop (disabled globally)
+        - name: unhandled-error
+          disabled: true # duplicates errcheck
+        - name: confusing-results
+          disabled: true # duplicates unnamedResult in gocritic
+        - name: flag-parameter
+          disabled: true # too strict, flags are fine for internal funcs
+        - name: redundant-test-main-exit
+          disabled: true # false positive: os.Exit(m.Run()) is required pattern
+        - name: enforce-switch-style
+          disabled: true # too strict for exhaustive switches
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: "io/ioutil"
+              desc: "deprecated since Go 1.16, use io and os packages"
+            - pkg: "log"
+              desc: "use log/slog for structured logging"
+            - pkg: "github.com/pkg/errors"
+              desc: "deprecated, use stdlib errors with fmt.Errorf %w"
+            - pkg: "math/rand"
+              desc: "use crypto/rand or math/rand/v2"
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+          yaml: snake
+          toml: snake
+          env: upperSnake
     gosec:
       excludes:
         - G304 # file inclusion via variable - we use paths from ReadDir
     forbidigo:
+      analyze-types: true
       forbid:
         - pattern: '^time\.Sleep$'
           msg: "time.Sleep is flaky in tests (use testing/synctest) and usually wrong in production (use tickers, timers, or context)."
@@ -159,6 +270,9 @@ linters:
         linters:
           - dupl
           - varnamelen
+          - noctx
+          - errcheck # allow _ = err in tests
+          - gosec # G104 duplicates errcheck
       # Allow time.Sleep in tests
       - path: _test\.go
         text: "time\\.Sleep"
@@ -189,6 +303,19 @@ linters:
         text: "G204:" # sandbox executes bwrap by design
         linters:
           - gosec
+      - path: command\.go
+        text: "G204:" # sandbox command execution
+        linters:
+          - gosec
+      - path: cmd_multicall\.go
+        text: "G204:" # multicall dispatcher executes wrapper commands
+        linters:
+          - gosec
+      # rand.Read requires pre-sized slice
+      - path: cmd_exec\.go
+        text: "slice .* does not have non-zero initial length"
+        linters:
+          - makezero
 
 formatters:
   enable:

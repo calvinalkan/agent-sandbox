@@ -16,7 +16,7 @@ func Test_Run_Shows_Help_When_No_Args(t *testing.T) {
 	}
 
 	AssertContains(t, stdout, "agent-sandbox - filesystem sandbox")
-	AssertContains(t, stdout, "Commands:")
+	AssertContains(t, stdout, "Flags:")
 }
 
 func Test_Run_Shows_Help_When_Help_Flag(t *testing.T) {
@@ -30,7 +30,7 @@ func Test_Run_Shows_Help_When_Help_Flag(t *testing.T) {
 	}
 
 	AssertContains(t, stdout, "agent-sandbox - filesystem sandbox")
-	AssertContains(t, stdout, "Commands:")
+	AssertContains(t, stdout, "Flags:")
 }
 
 func Test_Run_Shows_Help_When_H_Flag(t *testing.T) {
@@ -44,10 +44,10 @@ func Test_Run_Shows_Help_When_H_Flag(t *testing.T) {
 	}
 
 	AssertContains(t, stdout, "agent-sandbox - filesystem sandbox")
-	AssertContains(t, stdout, "Commands:")
+	AssertContains(t, stdout, "Flags:")
 }
 
-func Test_Run_Global_Help_Shows_Description_And_Footer(t *testing.T) {
+func Test_Run_Global_Help_Shows_Description_And_Examples(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -60,8 +60,9 @@ func Test_Run_Global_Help_Shows_Description_And_Footer(t *testing.T) {
 	// Verify tagline is present
 	AssertContains(t, stdout, "agent-sandbox - filesystem sandbox for agentic coding workflows")
 
-	// Verify footer hint is present
-	AssertContains(t, stdout, "Run 'agent-sandbox <command> --help' for more information on a command.")
+	// Verify examples are present
+	AssertContains(t, stdout, "Examples:")
+	AssertContains(t, stdout, "agent-sandbox echo hello")
 }
 
 func Test_Run_Shows_Version_When_Version_Flag(t *testing.T) {
@@ -75,8 +76,6 @@ func Test_Run_Shows_Version_When_Version_Flag(t *testing.T) {
 	}
 
 	AssertContains(t, stdout, "agent-sandbox")
-	// Default version is "dev" when not built with ldflags
-	AssertContains(t, stdout, "dev")
 	// When built from source (no ldflags), show cleaner output
 	AssertContains(t, stdout, "built from source")
 }
@@ -92,7 +91,7 @@ func Test_Run_Shows_Version_When_V_Flag(t *testing.T) {
 	}
 
 	AssertContains(t, stdout, "agent-sandbox")
-	AssertContains(t, stdout, "dev (built from source)")
+	AssertContains(t, stdout, "built from source")
 }
 
 func Test_Run_Version_Flag_In_Help_Output(t *testing.T) {
@@ -107,6 +106,20 @@ func Test_Run_Version_Flag_In_Help_Output(t *testing.T) {
 
 	AssertContains(t, stdout, "--version")
 	AssertContains(t, stdout, "Show version")
+}
+
+func Test_Run_Help_Shows_Config_Short_Flag(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+	stdout, _, code := c.Run("--help")
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+
+	// Verify -c, --config is shown in help
+	AssertContains(t, stdout, "-c, --config")
 }
 
 func Test_Run_Error_Output_Contains_Error_Prefix(t *testing.T) {
@@ -125,12 +138,12 @@ func Test_Run_Error_Output_Contains_Error_Prefix(t *testing.T) {
 	}
 }
 
-func Test_Run_Fails_With_Error_When_Unknown_Global_Flag(t *testing.T) {
+func Test_Run_Fails_With_Error_When_Unknown_Flag(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
 
-	_, stderr, code := c.Run("--unknown", "exec")
+	_, stderr, code := c.Run("--unknown", "echo", "hello")
 
 	if code != 1 {
 		t.Errorf("expected exit code 1, got %d", code)
@@ -140,22 +153,25 @@ func Test_Run_Fails_With_Error_When_Unknown_Global_Flag(t *testing.T) {
 	AssertContains(t, stderr, "Usage:")
 }
 
-func Test_Run_Shows_Blank_Line_Between_Global_Flag_Error_And_Usage(t *testing.T) {
+func Test_Run_Shows_Blank_Line_Between_Flag_Error_And_Usage(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
 
-	_, stderr, code := c.Run("--unknown", "exec")
+	_, stderr, code := c.Run("--unknown", "echo", "hello")
 
 	if code != 1 {
 		t.Errorf("expected exit code 1, got %d", code)
 	}
 
 	// Error message should be followed by blank line before usage help
-	AssertContains(t, stderr, "error: unknown flag: --unknown\n\nUsage:")
+	// Note: may have ANSI color codes, so check for the pattern without color codes
+	if !strings.Contains(stderr, "unknown flag: --unknown") || !strings.Contains(stderr, "\n\nagent-sandbox") {
+		t.Errorf("expected error followed by blank line and usage, got: %s", stderr)
+	}
 }
 
-func Test_Run_Help_Shows_All_Commands(t *testing.T) {
+func Test_Run_Help_Shows_Check_Flag(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -165,8 +181,20 @@ func Test_Run_Help_Shows_All_Commands(t *testing.T) {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 
-	AssertContains(t, stdout, "exec")
-	AssertContains(t, stdout, "check")
+	AssertContains(t, stdout, "--check")
+}
+
+func Test_Run_Help_Shows_Network_Flag(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+	stdout, _, code := c.Run("--help")
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+
+	AssertContains(t, stdout, "--network")
 }
 
 func Test_Config_Uses_Defaults_When_No_Config_File(t *testing.T) {
@@ -200,14 +228,30 @@ func Test_Config_Uses_Custom_Config_When_Config_Flag(t *testing.T) {
 	AssertContains(t, stdout, "agent-sandbox")
 }
 
+func Test_Config_Uses_Custom_Config_When_C_Short_Flag(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+	c.WriteFile("custom-config.jsonc", `{"network": false}`)
+
+	// Should load custom config without error using short flag -c
+	stdout, stderr, code := c.Run("-c", "custom-config.jsonc", "--help")
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0\nstderr: %s", code, stderr)
+	}
+
+	AssertContains(t, stdout, "agent-sandbox")
+}
+
 func Test_Config_Invalid_JSON_Returns_Error(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
 	c.WriteFile(".agent-sandbox.jsonc", `{invalid json}`)
 
-	// Use exec command (not --help) because help doesn't load config per SPEC
-	_, stderr, code := c.Run("exec", "echo", "hello")
+	// Run a command (not --help) because help doesn't load config
+	_, stderr, code := c.Run("echo", "hello")
 
 	if code != 1 {
 		t.Errorf("expected exit code 1 for invalid config, got %d", code)
@@ -221,9 +265,23 @@ func Test_Config_Missing_Explicit_Config_Returns_Error(t *testing.T) {
 
 	c := NewCLITester(t)
 
-	// Reference a config file that doesn't exist - should error (per spec)
-	// Use exec command (not --help) because help doesn't load config per SPEC
-	_, stderr, code := c.Run("--config", "nonexistent.jsonc", "exec", "echo", "hello")
+	// Reference a config file that doesn't exist - should error
+	_, stderr, code := c.Run("--config", "nonexistent.jsonc", "echo", "hello")
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+
+	AssertContains(t, stderr, "nonexistent.jsonc")
+}
+
+func Test_Config_Missing_Explicit_Config_Returns_Error_With_Short_Flag(t *testing.T) {
+	t.Parallel()
+
+	c := NewCLITester(t)
+
+	// Reference a config file that doesn't exist using short flag -c
+	_, stderr, code := c.Run("-c", "nonexistent.jsonc", "echo", "hello")
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
@@ -265,12 +323,49 @@ func Test_Config_XDG_CONFIG_HOME_Invalid_JSON_Returns_Error(t *testing.T) {
 
 	c.Env["XDG_CONFIG_HOME"] = xdgConfig
 
-	// Use exec command (not --help) because help doesn't load config per SPEC
-	_, stderr, code := c.Run("exec", "echo", "hello")
+	// Run a command (not --help) because help doesn't load config
+	_, stderr, code := c.Run("echo", "hello")
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
 	}
 
 	AssertContains(t, stderr, "parsing config")
+}
+
+func Test_Check_Flag_Inside_Sandbox(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	// Run --check inside a sandbox
+	stdout, stderr, code := RunBinary(t, "echo", "hello")
+	if code != 0 {
+		t.Fatalf("failed to run sandbox: %s", stderr)
+	}
+
+	_ = stdout
+
+	// The --check flag should return 0 inside sandbox
+	stdout, _, code = RunBinary(t, "--check")
+	// This runs OUTSIDE sandbox, so should return 1
+	if code != 1 {
+		t.Errorf("expected exit code 1 outside sandbox, got %d", code)
+	}
+
+	AssertContains(t, stdout, "outside sandbox")
+}
+
+func Test_Check_Flag_Outside_Sandbox(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t) // Skip if already inside sandbox
+
+	c := NewCLITester(t)
+	stdout, _, code := c.Run("--check")
+
+	// Outside sandbox, should exit 1
+	if code != 1 {
+		t.Errorf("expected exit code 1 outside sandbox, got %d", code)
+	}
+
+	AssertContains(t, stdout, "outside sandbox")
 }

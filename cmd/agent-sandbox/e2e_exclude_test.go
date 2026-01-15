@@ -14,7 +14,6 @@ import (
 
 func Test_Exclude_Directory_Exists_But_Is_Empty(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -40,7 +39,6 @@ func Test_Exclude_Directory_Exists_But_Is_Empty(t *testing.T) {
 
 func Test_Exclude_Directory_Contents_Return_ENOENT(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -58,7 +56,6 @@ func Test_Exclude_Directory_Contents_Return_ENOENT(t *testing.T) {
 
 func Test_Exclude_Nested_Directory_Parent_Accessible(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -89,7 +86,6 @@ func Test_Exclude_Nested_Directory_Parent_Accessible(t *testing.T) {
 
 func Test_Exclude_Directory_Subdirectories_Not_Visible(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -114,7 +110,6 @@ func Test_Exclude_Directory_Subdirectories_Not_Visible(t *testing.T) {
 
 func Test_Exclude_Directory_Sibling_Unaffected(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -149,7 +144,6 @@ func Test_Exclude_Directory_Sibling_Unaffected(t *testing.T) {
 
 func Test_Exclude_File_Exists_But_Unreadable(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -171,7 +165,6 @@ func Test_Exclude_File_Exists_But_Unreadable(t *testing.T) {
 
 func Test_Exclude_File_Read_Returns_Permission_Denied(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -189,7 +182,6 @@ func Test_Exclude_File_Read_Returns_Permission_Denied(t *testing.T) {
 
 func Test_Exclude_File_Has_Mode_000(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -210,7 +202,6 @@ func Test_Exclude_File_Has_Mode_000(t *testing.T) {
 
 func Test_Exclude_File_Sibling_Accessible(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -239,7 +230,6 @@ func Test_Exclude_File_Sibling_Accessible(t *testing.T) {
 
 func Test_Exclude_File_In_Subdirectory(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -285,7 +275,6 @@ func requireNode(t *testing.T) string {
 
 func Test_Exclude_Node_Existsync_Readfilesync(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	nodePath := requireNode(t)
 
@@ -327,7 +316,6 @@ try {
 
 func Test_Exclude_Node_Readdirsync_Directory(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	nodePath := requireNode(t)
 
@@ -365,7 +353,6 @@ console.log('contents:', fs.readdirSync('secrets').join(','));
 
 func Test_Exclude_Python_Exists_Read_Listdir(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	// Skip if python isn't available (try python3 first, then python)
 	pythonCmd := "python3"
@@ -418,7 +405,6 @@ except Exception as e:
 
 func Test_Exclude_Python_Listdir_Directory(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	// Skip if python isn't available
 	pythonCmd := "python3"
@@ -469,7 +455,6 @@ print('contents:', os.listdir('secrets'))
 
 func Test_Exclude_Symlink_To_Directory_Excludes_Both(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -505,7 +490,6 @@ func Test_Exclude_Symlink_To_Directory_Excludes_Both(t *testing.T) {
 
 func Test_Exclude_Symlink_To_File_Excludes_Both(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -537,7 +521,6 @@ func Test_Exclude_Symlink_To_File_Excludes_Both(t *testing.T) {
 
 func Test_Exclude_Nonexistent_Path_No_Error(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -554,7 +537,6 @@ func Test_Exclude_Nonexistent_Path_No_Error(t *testing.T) {
 
 func Test_Exclude_Multiple_Paths_In_Same_Directory(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -591,7 +573,6 @@ func Test_Exclude_Multiple_Paths_In_Same_Directory(t *testing.T) {
 
 func Test_Exclude_Glob_Pattern_Matches_Multiple_Files(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -628,7 +609,6 @@ func Test_Exclude_Glob_Pattern_Matches_Multiple_Files(t *testing.T) {
 
 func Test_Exclude_Glob_Pattern_Matches_Directories(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -668,7 +648,6 @@ func Test_Exclude_Glob_Pattern_Matches_Directories(t *testing.T) {
 
 func Test_Exclude_Deep_Nested_Directory(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -699,7 +678,6 @@ func Test_Exclude_Deep_Nested_Directory(t *testing.T) {
 
 func Test_Exclude_File_Write_Blocked(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -726,7 +704,6 @@ func Test_Exclude_File_Write_Blocked(t *testing.T) {
 
 func Test_Exclude_Directory_Create_File_Isolated(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -758,7 +735,6 @@ func Test_Exclude_Directory_Create_File_Isolated(t *testing.T) {
 
 func Test_Exclude_File_Delete_Blocked(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -783,7 +759,6 @@ func Test_Exclude_File_Delete_Blocked(t *testing.T) {
 
 func Test_Exclude_Hidden_Files_Only(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -812,7 +787,6 @@ func Test_Exclude_Hidden_Files_Only(t *testing.T) {
 
 func Test_Exclude_Absolute_Path(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -831,7 +805,6 @@ func Test_Exclude_Absolute_Path(t *testing.T) {
 
 func Test_Exclude_Home_Relative_Path(t *testing.T) {
 	t.Parallel()
-	RequireBwrap(t)
 
 	c := NewCLITester(t)
 
@@ -845,4 +818,69 @@ func Test_Exclude_Home_Relative_Path(t *testing.T) {
 	}
 
 	AssertContains(t, stderr, "Permission denied")
+}
+
+// =============================================================================
+// E2E Tests: WorkDir inside excluded path
+// =============================================================================
+
+// Note: This test does not use the typical NewCLITester pattern because we need
+// workDir to be INSIDE an excluded parent directory, which requires custom setup.
+func Test_Exclude_Succeeds_When_WorkDir_Is_Inside_Excluded_Parent(t *testing.T) {
+	t.Parallel()
+
+	parentDir := t.TempDir()
+	workDir := filepath.Join(parentDir, "project")
+
+	err := os.MkdirAll(workDir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a sibling host file that should be hidden by excluding the parent dir.
+	secretPath := filepath.Join(parentDir, "secret.txt")
+	mustWriteFile(t, secretPath, "top secret")
+
+	c := NewCLITesterAt(t, parentDir)
+
+	script := `set -eu
+parent="$1"
+work="$2"
+
+pwd="$(pwd)"
+if [ "$pwd" != "$work" ]; then
+  echo "pwd mismatch: got=$pwd want=$work" >&2
+  exit 1
+fi
+
+# This write should hit the host filesystem (workdir is re-exposed as a RW mount).
+echo sandbox > from-sandbox.txt
+
+# Parent dir is excluded (tmpfs), but the workdir should be re-exposed as the only entry.
+entries="$(ls -A "$parent")"
+if [ "$entries" != "project" ]; then
+  echo "expected parent dir to contain only 'project', got: $entries" >&2
+  exit 1
+fi
+
+if [ -e "$parent/secret.txt" ]; then
+  echo "expected parent sibling file to be hidden" >&2
+  exit 1
+fi
+`
+
+	_, stderr, code := c.RunInDir(workDir, "--exclude", parentDir, "sh", "-c", script, "sh", parentDir, workDir)
+	if code != 0 {
+		t.Fatalf("expected success when workDir is inside excluded parent (workDir should be re-exposed), got exit %d, stderr: %s", code, stderr)
+	}
+
+	// Verify the write landed on the host filesystem.
+	if got := mustReadFile(t, filepath.Join(workDir, "from-sandbox.txt")); got != "sandbox\n" {
+		t.Fatalf("expected from-sandbox.txt to contain %q, got %q", "sandbox\\n", got)
+	}
+
+	// Verify the sibling secret file still exists on the host.
+	if got := mustReadFile(t, secretPath); got != "top secret" {
+		t.Fatalf("expected secret.txt to remain unchanged on host, got %q", got)
+	}
 }
