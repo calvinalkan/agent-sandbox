@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func Test_MulticallCmd_Not_In_Help(t *testing.T) {
+func Test_MulticallCmd_Not_In_Help_When_Help_Is_Shown(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -16,7 +16,7 @@ func Test_MulticallCmd_Not_In_Help(t *testing.T) {
 	}
 }
 
-func Test_parseGitArgs_Finds_Subcommand_At_Start(t *testing.T) {
+func Test_ParseGitArgs_Finds_Subcommand_When_At_Start(t *testing.T) {
 	t.Parallel()
 
 	subcommand, rest := parseGitArgs([]string{"status", "--short"})
@@ -30,7 +30,7 @@ func Test_parseGitArgs_Finds_Subcommand_At_Start(t *testing.T) {
 	}
 }
 
-func Test_parseGitArgs_Skips_Global_Flags(t *testing.T) {
+func Test_ParseGitArgs_Skips_Global_Flags_When_Present(t *testing.T) {
 	t.Parallel()
 
 	args := []string{"-C", "/repo", "--no-pager", "commit", "-m", "msg"}
@@ -45,7 +45,7 @@ func Test_parseGitArgs_Skips_Global_Flags(t *testing.T) {
 	}
 }
 
-func Test_hasFlag_Handles_Equals_Form(t *testing.T) {
+func Test_HasFlag_Handles_Equals_Form_When_Value_Is_Assigned(t *testing.T) {
 	t.Parallel()
 
 	if !hasFlag([]string{"--force-with-lease=branch"}, "--force-with-lease") {
@@ -53,7 +53,7 @@ func Test_hasFlag_Handles_Equals_Form(t *testing.T) {
 	}
 }
 
-func Test_isGitOperationBlocked_Blocks_Reset_Hard(t *testing.T) {
+func Test_IsGitOperationBlocked_Blocks_Reset_Hard_When_Hard_Reset_Is_Requested(t *testing.T) {
 	t.Parallel()
 
 	err := isBlockedGitOperation("reset", []string{"--hard"})

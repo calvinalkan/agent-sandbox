@@ -449,6 +449,10 @@ func resolveAndDedupRules(mounts []Mount, paths pathResolver, debugf Debugf) ([]
 				return nil, fmt.Errorf("resolved path %q (mount %d) is too deeply nested (%d)", resolved, i, depth)
 			}
 
+			if isReservedRuntimePath(resolved) {
+				return nil, fmt.Errorf("policy mount %d (%s) targets reserved path %q", i, mountKindName(mount.Kind), resolved)
+			}
+
 			cand := resolvedRule{
 				resolved:  resolved,
 				index:     i,
@@ -520,6 +524,10 @@ func resolveAndDedupRules(mounts []Mount, paths pathResolver, debugf Debugf) ([]
 			}
 
 			resolved = filepath.Clean(resolved)
+
+			if isReservedRuntimePath(resolved) {
+				return nil, fmt.Errorf("policy mount %d (%s) targets reserved path %q", i, mountKindName(mount.Kind), resolved)
+			}
 
 			info, err := os.Stat(resolved)
 			if err != nil {
@@ -879,4 +887,8 @@ func mountToArgs(mnt Mount) ([]string, error) {
 
 func hasGlobMeta(pattern string) bool {
 	return strings.ContainsAny(pattern, "*?[")
+}
+
+func isReservedRuntimePath(path string) bool {
+	return path == "/run" || path == "/run/agent-sandbox" || strings.HasPrefix(path, "/run/agent-sandbox/")
 }

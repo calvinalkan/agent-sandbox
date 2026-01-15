@@ -92,12 +92,13 @@ func runMulticall(ctx context.Context, cmdName string, cmdArgs []string, stdin i
 
 		// Block-only policies do not mount a real binary; allow wrapper execution
 		// in that case by clearing AGENT_SANDBOX_REAL when the file is missing.
-		if _, statErr := os.Stat(realBinary); statErr != nil {
-			if os.IsNotExist(statErr) {
-				realBinary = ""
-			} else {
-				return fmt.Errorf("stat %q: %w", realBinary, statErr)
+		_, statErr := os.Stat(realBinary)
+		if statErr != nil {
+			if !os.IsNotExist(statErr) {
+				return fmt.Errorf("statting %q: %w", realBinary, statErr)
 			}
+
+			realBinary = ""
 		}
 
 		return runPolicy(ctx, &policyRunInput{
@@ -127,7 +128,11 @@ type policyRunInput struct {
 }
 
 func runPolicy(ctx context.Context, config *policyRunInput) error {
-	cmd := exec.CommandContext(ctx, config.policyPath, config.cmdArgs...)
+	cmd, err := newExecCmd(config.policyPath, config.cmdArgs)
+	if err != nil {
+		return fmt.Errorf("running wrapper command %s: %w", config.cmdName, err)
+	}
+
 	cmd.Stdin = config.stdin
 	cmd.Stdout = config.stdout
 	cmd.Stderr = config.stderr
@@ -138,9 +143,9 @@ func runPolicy(ctx context.Context, config *policyRunInput) error {
 		"AGENT_SANDBOX_REAL="+config.realBinary,
 	)
 
-	err := cmd.Run()
+	err = runCommandWithContext(ctx, cmd)
 	if err != nil {
-		return fmt.Errorf("run wrapper command %s: %w", config.cmdName, err)
+		return fmt.Errorf("running wrapper command %s: %w", config.cmdName, err)
 	}
 
 	return nil
@@ -161,17 +166,80 @@ func runGitPreset(ctx context.Context, runtimeRoot string, cmdArgs []string, std
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, realBinary, cmdArgs...)
+	cmd, err := newExecCmd(realBinary, cmdArgs)
+	if err != nil {
+		return err
+	}
+
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err = cmd.Run()
+	err = runCommandWithContext(ctx, cmd)
 	if err != nil {
-		return fmt.Errorf("run git: %w", err)
+		return fmt.Errorf("running git: %w", err)
 	}
 
 	return nil
+}
+
+func newExecCmd(path string, args []string) (*exec.Cmd, error) {
+	if path == "" {
+		return nil, errors.New("missing command path")
+	}
+
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("command path must be absolute: %s", path)
+	}
+
+	cmd := &exec.Cmd{
+		Path: path,
+		Args: append([]string{path}, args...),
+	}
+
+	return cmd, nil
+}
+
+func runCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
+	if ctx == nil {
+		err := cmd.Run()
+		if err != nil {
+			return fmt.Errorf("running command: %w", err)
+		}
+
+		return nil
+	}
+
+	err := cmd.Start()
+	if err != nil {
+		return fmt.Errorf("starting command: %w", err)
+	}
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("waiting for command: %w", err)
+		}
+
+		return nil
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+
+		err := <-done
+		if err != nil {
+			return fmt.Errorf("waiting for command: %w", err)
+		}
+
+		return fmt.Errorf("command cancelled: %w", ctx.Err())
+	}
 }
 
 func envMapToSlice(env map[string]string) []string {
@@ -330,12 +398,12 @@ func isInTempDir() (bool, error) {
 
 	pwdReal, err := filepath.EvalSymlinks(pwd)
 	if err != nil {
-		return false, fmt.Errorf("resolve working directory: %w", err)
+		return false, fmt.Errorf("resolving working directory: %w", err)
 	}
 
 	tmpReal, err := filepath.EvalSymlinks("/tmp")
 	if err != nil {
-		return false, fmt.Errorf("resolve /tmp: %w", err)
+		return false, fmt.Errorf("resolving /tmp: %w", err)
 	}
 
 	return strings.HasPrefix(pwdReal, tmpReal), nil

@@ -2632,6 +2632,23 @@ func Test_Sandbox_NewWithEnvironment_ReturnsError_When_PolicyMount_Destination_E
 	}
 }
 
+func Test_Sandbox_NewWithEnvironment_ReturnsError_When_PolicyMount_TargetsRun(t *testing.T) {
+	t.Parallel()
+
+	env, _ := newEnvWithHostEnv(t, nil)
+
+	cfg := sandbox.Config{Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}, Mounts: []sandbox.Mount{sandbox.RW("/run")}}}
+
+	_, err := sandbox.NewWithEnvironment(&cfg, env)
+	if err == nil {
+		t.Fatal("expected error for /run policy mount")
+	}
+
+	if !strings.Contains(err.Error(), "reserved path") {
+		t.Fatalf("expected error to mention reserved path, got %v", err)
+	}
+}
+
 func Test_Sandbox_PolicyMounts_ExpandGlobs_And_Error_When_NoMatches(t *testing.T) {
 	t.Parallel()
 

@@ -77,7 +77,7 @@ func Test_Nested_Sandbox_Rejects_Third_Level(t *testing.T) {
 		t.Fatal("expected third-level nested sandbox to be rejected, got exit code 0")
 	}
 
-	if !strings.Contains(stderr, errNestedSandboxDepthMessage) {
+	if !strings.Contains(stderr, "nested sandboxes beyond one level are not supported") {
 		t.Fatalf("expected nested sandbox depth error, got:\n%s", stderr)
 	}
 }

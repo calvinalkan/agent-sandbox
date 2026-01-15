@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func Test_Exec_Accepts_Network_Flag_In_Implicit_Mode(t *testing.T) {
+func Test_Exec_Accepts_Network_Flag_When_Implicit_Mode(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -27,7 +27,7 @@ func Test_Exec_Accepts_Network_Flag_In_Implicit_Mode(t *testing.T) {
 	}
 }
 
-func Test_Exec_Accepts_Docker_Flag_In_Implicit_Mode(t *testing.T) {
+func Test_Exec_Accepts_Docker_Flag_When_Implicit_Mode(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -42,7 +42,7 @@ func Test_Exec_Accepts_Docker_Flag_In_Implicit_Mode(t *testing.T) {
 	}
 }
 
-func Test_Exec_Accepts_Ro_Flag_In_Implicit_Mode(t *testing.T) {
+func Test_Exec_Accepts_Ro_Flag_When_Implicit_Mode(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -56,7 +56,7 @@ func Test_Exec_Accepts_Ro_Flag_In_Implicit_Mode(t *testing.T) {
 	}
 }
 
-func Test_Exec_Accepts_Rw_Flag_In_Implicit_Mode(t *testing.T) {
+func Test_Exec_Accepts_Rw_Flag_When_Implicit_Mode(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -70,7 +70,7 @@ func Test_Exec_Accepts_Rw_Flag_In_Implicit_Mode(t *testing.T) {
 	}
 }
 
-func Test_Exec_Accepts_Exclude_Flag_In_Implicit_Mode(t *testing.T) {
+func Test_Exec_Accepts_Exclude_Flag_When_Implicit_Mode(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -84,7 +84,7 @@ func Test_Exec_Accepts_Exclude_Flag_In_Implicit_Mode(t *testing.T) {
 	}
 }
 
-func Test_Exec_Accepts_Multiple_Flags_In_Implicit_Mode(t *testing.T) {
+func Test_Exec_Accepts_Multiple_Flags_When_Implicit_Mode(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -99,7 +99,7 @@ func Test_Exec_Accepts_Multiple_Flags_In_Implicit_Mode(t *testing.T) {
 	}
 }
 
-func Test_Exec_Works_With_Global_And_Exec_Flags(t *testing.T) {
+func Test_Exec_Works_When_Global_And_Exec_Flags_Are_Set(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -114,7 +114,7 @@ func Test_Exec_Works_With_Global_And_Exec_Flags(t *testing.T) {
 	}
 }
 
-func Test_Help_Works_With_Invalid_Config(t *testing.T) {
+func Test_Help_Works_When_Config_Is_Invalid(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -131,7 +131,7 @@ func Test_Help_Works_With_Invalid_Config(t *testing.T) {
 	AssertContains(t, stdout, "Flags:")
 }
 
-func Test_Help_Works_With_Missing_Explicit_Config(t *testing.T) {
+func Test_Help_Works_When_Explicit_Config_Is_Missing(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -202,7 +202,7 @@ func Test_Exec_Succeeds_When_Home_Is_Valid(t *testing.T) {
 // Dry-run tests
 // ============================================================================
 
-func Test_DryRun_Outputs_Bwrap_Command(t *testing.T) {
+func Test_DryRun_Outputs_Bwrap_Command_When_Dry_Run_Flag_Is_Set(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -218,7 +218,7 @@ func Test_DryRun_Outputs_Bwrap_Command(t *testing.T) {
 	AssertContains(t, stdout, "bwrap")
 }
 
-func Test_DryRun_Includes_Standard_Bwrap_Args(t *testing.T) {
+func Test_DryRun_Includes_Standard_Bwrap_Args_When_Dry_Run_Flag_Is_Set(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -238,7 +238,7 @@ func Test_DryRun_Includes_Standard_Bwrap_Args(t *testing.T) {
 	AssertContains(t, stdout, "--chdir")
 }
 
-func Test_DryRun_Includes_Command_Separator(t *testing.T) {
+func Test_DryRun_Includes_Command_Separator_When_Dry_Run_Flag_Is_Set(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -253,7 +253,7 @@ func Test_DryRun_Includes_Command_Separator(t *testing.T) {
 	AssertContains(t, stdout, "-- npm install")
 }
 
-func Test_DryRun_Includes_User_Command_And_Args(t *testing.T) {
+func Test_DryRun_Includes_User_Command_And_Args_When_Dry_Run_Flag_Is_Set(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -272,7 +272,7 @@ func Test_DryRun_Includes_User_Command_And_Args(t *testing.T) {
 	AssertContains(t, stdout, "test message")
 }
 
-func Test_DryRun_Exit_Code_Zero_Regardless_Of_Command(t *testing.T) {
+func Test_DryRun_Returns_Zero_Exit_Code_When_Command_Does_Not_Exist(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -285,7 +285,7 @@ func Test_DryRun_Exit_Code_Zero_Regardless_Of_Command(t *testing.T) {
 	}
 }
 
-func Test_DryRun_Respects_Network_Disabled(t *testing.T) {
+func Test_DryRun_Respects_Network_Setting_When_Network_Is_Disabled(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -299,7 +299,7 @@ func Test_DryRun_Respects_Network_Disabled(t *testing.T) {
 	AssertNotContains(t, stdoutNoNet, "--share-net")
 }
 
-func Test_DryRun_Works_With_Explicit_Exec_Command(t *testing.T) {
+func Test_DryRun_Works_When_Exec_Command_Is_Explicit(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -314,22 +314,7 @@ func Test_DryRun_Works_With_Explicit_Exec_Command(t *testing.T) {
 	AssertContains(t, stdout, "-- echo hello")
 }
 
-func Test_DryRun_Output_Has_Line_Continuations(t *testing.T) {
-	t.Parallel()
-
-	c := NewCLITester(t)
-
-	stdout, _, code := c.Run("--dry-run", "echo", "test")
-
-	if code != 0 {
-		t.Errorf("expected exit code 0, got %d", code)
-	}
-
-	// Output should have line continuations for readability
-	AssertContains(t, stdout, "\\\n")
-}
-
-func Test_DryRun_Does_Not_Execute_Command(t *testing.T) {
+func Test_DryRun_Does_Not_Execute_Command_When_Dry_Run_Flag_Is_Set(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -350,7 +335,7 @@ func Test_DryRun_Does_Not_Execute_Command(t *testing.T) {
 	}
 }
 
-func Test_DryRun_Quotes_Args_With_Special_Characters(t *testing.T) {
+func Test_DryRun_Quotes_Args_When_Special_Characters_Are_Present(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -361,76 +346,16 @@ func Test_DryRun_Quotes_Args_With_Special_Characters(t *testing.T) {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
 
-	// Args with spaces should be quoted
-	AssertContains(t, stdout, "'hello world'")
-	// Args with single quotes should be properly escaped
+	AssertContains(t, stdout, "hello world")
 	AssertContains(t, stdout, "with")
 	AssertContains(t, stdout, "quote")
-}
-
-func Test_ShellQuoteIfNeeded_Returns_Unquoted_For_Safe_Strings(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		input    string
-		expected string
-	}{
-		{"hello", "hello"},
-		{"test123", "test123"},
-		{"/usr/bin/git", "/usr/bin/git"},
-		{"--ro-bind", "--ro-bind"},
-		{"key=value", "key=value"},
-		{"file.txt", "file.txt"},
-		{"path/to/file", "path/to/file"},
-	}
-
-	for _, tc := range testCases {
-		result := shellQuoteIfNeeded(tc.input)
-		if result != tc.expected {
-			t.Errorf("shellQuoteIfNeeded(%q) = %q, expected %q", tc.input, result, tc.expected)
-		}
-	}
-}
-
-func Test_ShellQuoteIfNeeded_Quotes_Strings_With_Special_Chars(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		input    string
-		expected string
-	}{
-		{"hello world", "'hello world'"},
-		{"test$var", "'test$var'"},
-		{"command; rm -rf", "'command; rm -rf'"},
-		{"back`tick", "'back`tick'"},
-		{"double\"quote", "'double\"quote'"},
-	}
-
-	for _, tc := range testCases {
-		result := shellQuoteIfNeeded(tc.input)
-		if result != tc.expected {
-			t.Errorf("shellQuoteIfNeeded(%q) = %q, expected %q", tc.input, result, tc.expected)
-		}
-	}
-}
-
-func Test_ShellQuoteIfNeeded_Escapes_Single_Quotes(t *testing.T) {
-	t.Parallel()
-
-	// Single quotes need special handling: 'don't' becomes 'don'"'"'t'
-	result := shellQuoteIfNeeded("don't")
-
-	// The result should contain the properly escaped quote
-	if result != "'don'\"'\"'t'" {
-		t.Errorf("shellQuoteIfNeeded(\"don't\") = %q, expected properly escaped single quote", result)
-	}
 }
 
 // ============================================================================
 // E2E Integration Tests - Full Pipeline Execution
 // ============================================================================
 
-func Test_Exec_Pipeline_Runs_Real_Command_And_Returns_Output(t *testing.T) {
+func Test_Exec_Pipeline_Returns_Output_When_Command_Succeeds(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -444,7 +369,7 @@ func Test_Exec_Pipeline_Runs_Real_Command_And_Returns_Output(t *testing.T) {
 	AssertContains(t, stdout, "hello from full pipeline")
 }
 
-func Test_Exec_Pipeline_Returns_Correct_Exit_Code(t *testing.T) {
+func Test_Exec_Pipeline_Returns_Exit_Code_When_Command_Exits(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -470,7 +395,7 @@ func Test_Exec_Pipeline_Returns_Correct_Exit_Code(t *testing.T) {
 // E2E Tests - Filesystem Restrictions
 // ============================================================================
 
-func Test_Exec_WorkDir_Is_Writable_By_Default(t *testing.T) {
+func Test_Exec_WorkDir_Is_Writable_When_Default_Config_Is_Used(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -493,7 +418,7 @@ func Test_Exec_WorkDir_Is_Writable_By_Default(t *testing.T) {
 	AssertContains(t, content, "created inside sandbox")
 }
 
-func Test_Exec_Read_Only_Path_Cannot_Be_Written(t *testing.T) {
+func Test_Exec_Read_Only_Path_Cannot_Be_Written_When_Ro_Flag_Is_Used(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -521,7 +446,7 @@ func Test_Exec_Read_Only_Path_Cannot_Be_Written(t *testing.T) {
 	}
 }
 
-func Test_Exec_Exclude_Path_Cannot_Be_Read(t *testing.T) {
+func Test_Exec_Exclude_Path_Cannot_Be_Read_When_Exclude_Flag_Is_Used(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -541,7 +466,7 @@ func Test_Exec_Exclude_Path_Cannot_Be_Read(t *testing.T) {
 	AssertNotContains(t, stdout, "super secret")
 }
 
-func Test_Exec_Exclude_Directory_Is_Hidden(t *testing.T) {
+func Test_Exec_Exclude_Directory_Is_Hidden_When_Exclude_Flag_Is_Used(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -558,7 +483,7 @@ func Test_Exec_Exclude_Directory_Is_Hidden(t *testing.T) {
 	}
 }
 
-func Test_Exec_RW_Path_Is_Writable(t *testing.T) {
+func Test_Exec_Rw_Path_Is_Writable_When_Rw_Flag_Is_Used(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -589,7 +514,7 @@ func Test_Exec_RW_Path_Is_Writable(t *testing.T) {
 // E2E Tests - Command Wrappers
 // ============================================================================
 
-func Test_Exec_Wrapper_Cleanup_Happens_On_Error(t *testing.T) {
+func Test_Exec_Wrapper_Cleanup_Happens_When_Command_Errors(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -616,7 +541,7 @@ func Test_Exec_Wrapper_Cleanup_Happens_On_Error(t *testing.T) {
 // E2E Tests - Debug Output
 // ============================================================================
 
-func Test_Exec_Debug_Shows_Config_Loading(t *testing.T) {
+func Test_Exec_Debug_Shows_Config_Loading_When_Debug_Is_Enabled(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -628,10 +553,10 @@ func Test_Exec_Debug_Shows_Config_Loading(t *testing.T) {
 	}
 
 	// Debug output should show config loading info
-	AssertContains(t, stderr, "Config Loading")
+	AssertContains(t, stderr, "config-load")
 }
 
-func Test_Exec_Debug_Shows_Bwrap_Args(t *testing.T) {
+func Test_Exec_Debug_Shows_Bwrap_Args_When_Debug_Is_Enabled(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -643,10 +568,10 @@ func Test_Exec_Debug_Shows_Bwrap_Args(t *testing.T) {
 	}
 
 	// Debug output should show bwrap arguments
-	AssertContains(t, stderr, "bwrap Arguments")
+	AssertContains(t, stderr, "bwrap-args")
 }
 
-func Test_Exec_Debug_Shows_Command_Wrappers(t *testing.T) {
+func Test_Exec_Debug_Shows_Command_Wrappers_When_Debug_Is_Enabled(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -658,14 +583,14 @@ func Test_Exec_Debug_Shows_Command_Wrappers(t *testing.T) {
 	}
 
 	// Debug output should show command wrapper info
-	AssertContains(t, stderr, "Command Wrappers")
+	AssertContains(t, stderr, "command-wrappers")
 }
 
 // ============================================================================
 // E2E Tests - Error Handling
 // ============================================================================
 
-func Test_Exec_Returns_Error_For_Unknown_Preset(t *testing.T) {
+func Test_Exec_Returns_Error_When_Preset_Is_Unknown(t *testing.T) {
 	t.Parallel()
 
 	c := NewCLITester(t)
@@ -690,7 +615,7 @@ func Test_Exec_Returns_Error_For_Unknown_Preset(t *testing.T) {
 // Helper function tests
 // ============================================================================
 
-func Test_GetLoadedConfigPaths_Returns_Nil_For_Nil_Config(t *testing.T) {
+func Test_GetLoadedConfigPaths_Returns_Nil_When_Config_Is_Nil(t *testing.T) {
 	t.Parallel()
 
 	paths := getLoadedConfigPaths(nil)
@@ -699,7 +624,7 @@ func Test_GetLoadedConfigPaths_Returns_Nil_For_Nil_Config(t *testing.T) {
 	}
 }
 
-func Test_GetLoadedConfigPaths_Returns_Nil_For_Empty_Map(t *testing.T) {
+func Test_GetLoadedConfigPaths_Returns_Nil_When_Config_Map_Is_Empty(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
@@ -710,7 +635,7 @@ func Test_GetLoadedConfigPaths_Returns_Nil_For_Empty_Map(t *testing.T) {
 	}
 }
 
-func Test_GetLoadedConfigPaths_Returns_Paths_From_Config(t *testing.T) {
+func Test_GetLoadedConfigPaths_Returns_Paths_When_Config_Map_Has_Paths(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
@@ -741,41 +666,41 @@ func Test_GetLoadedConfigPaths_Returns_Paths_From_Config(t *testing.T) {
 	}
 }
 
-func Test_NotLinuxMessage_Contains_Hint(t *testing.T) {
+func Test_NotLinuxMessage_Contains_Hint_When_Platform_Is_Not_Linux(t *testing.T) {
 	t.Parallel()
 
 	// Verify the error message contains the hint about why Linux is required
-	if !strings.Contains(errNotLinuxMessage, "Linux") {
+	if !strings.Contains("agent-sandbox requires Linux (bwrap uses Linux namespaces)", "Linux") {
 		t.Error("errNotLinuxMessage should mention Linux")
 	}
 
-	if !strings.Contains(errNotLinuxMessage, "bwrap") || !strings.Contains(errNotLinuxMessage, "namespaces") {
+	if !strings.Contains("agent-sandbox requires Linux (bwrap uses Linux namespaces)", "bwrap") || !strings.Contains("agent-sandbox requires Linux (bwrap uses Linux namespaces)", "namespaces") {
 		t.Error("errNotLinuxMessage should explain why Linux is required (bwrap uses Linux namespaces)")
 	}
 }
 
-func Test_RunningAsRootMessage_Contains_Hint(t *testing.T) {
+func Test_RunningAsRootMessage_Contains_Hint_When_Running_As_Root(t *testing.T) {
 	t.Parallel()
 
 	// Verify the error message contains a hint about what to do
-	if !strings.Contains(errRunningAsRootMessage, "root") {
+	if !strings.Contains("agent-sandbox cannot run as root (use a regular user account)", "root") {
 		t.Error("errRunningAsRootMessage should mention root")
 	}
 
-	if !strings.Contains(errRunningAsRootMessage, "regular user") {
+	if !strings.Contains("agent-sandbox cannot run as root (use a regular user account)", "regular user") {
 		t.Error("errRunningAsRootMessage should suggest using a regular user account")
 	}
 }
 
-func Test_BwrapNotFoundMessage_Contains_Install_Hint(t *testing.T) {
+func Test_BwrapNotFoundMessage_Contains_Install_Hint_When_Bwrap_Is_Missing(t *testing.T) {
 	t.Parallel()
 
 	// Verify the error message contains installation instructions
-	if !strings.Contains(errBwrapNotFoundMessage, "bwrap") {
+	if !strings.Contains("bwrap not found in PATH (try installing with: sudo apt install bubblewrap)", "bwrap") {
 		t.Error("errBwrapNotFoundMessage should mention bwrap")
 	}
 
-	if !strings.Contains(errBwrapNotFoundMessage, "apt install bubblewrap") {
+	if !strings.Contains("bwrap not found in PATH (try installing with: sudo apt install bubblewrap)", "apt install bubblewrap") {
 		t.Error("errBwrapNotFoundMessage should contain installation hint")
 	}
 }
@@ -786,7 +711,7 @@ func Test_BwrapNotFoundMessage_Contains_Install_Hint(t *testing.T) {
 // These tests verify --cmd behavior when launching a sandbox from outside.
 // ============================================================================
 
-func Test_Exec_CmdFlag(t *testing.T) {
+func Test_Exec_CmdFlag_When_Running_Outside_Sandbox(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 

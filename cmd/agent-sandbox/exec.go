@@ -17,13 +17,7 @@ import (
 )
 
 const (
-	agentSandboxRuntimeRoot        = "/run/agent-sandbox"
-	errNoCommandMessage            = "no command specified (usage: agent-sandbox <command> [args])"
-	errNotLinuxMessage             = "agent-sandbox requires Linux (bwrap uses Linux namespaces)"
-	errRunningAsRootMessage        = "agent-sandbox cannot run as root (use a regular user account)"
-	errBwrapNotFoundMessage        = "bwrap not found in PATH (try installing with: sudo apt install bubblewrap)"
-	errInvalidCommandPresetMessage = "command preset can only be used for its matching command"
-	errNestedSandboxDepthMessage   = "nested sandboxes beyond one level are not supported"
+	agentSandboxRuntimeRoot = "/run/agent-sandbox"
 )
 
 // sandboxBinaryPath is where the agent-sandbox binary is mounted inside the sandbox.
@@ -31,6 +25,8 @@ const (
 // This path lives under the sandbox's /run tmpfs, so its presence is a reliable
 // indicator that we're running inside an agent-sandbox-created sandbox.
 var sandboxBinaryPath = filepath.Join(agentSandboxRuntimeRoot, "agent-sandbox")
+
+type killCtxKey struct{}
 
 // WithKillContext returns a context that carries a separate "kill context".
 // When the kill context is cancelled, the sandboxed process should be sent SIGKILL.
@@ -40,41 +36,51 @@ func WithKillContext(ctx context.Context, killCtx context.Context) context.Conte
 	return context.WithValue(ctx, killCtxKey{}, killCtx)
 }
 
-type killCtxKey struct{}
+type ExecuteSandboxInput struct {
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+	Config *Config
+	Env    map[string]string
+	Args   []string
+	Debug  *DebugLogger
+	DryRun bool
+}
 
-func ExecuteSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, cfg *Config, env map[string]string, args []string, debug *DebugLogger, dryRun bool) int {
+func ExecuteSandbox(ctx context.Context, input *ExecuteSandboxInput) (int, error) {
+	cfg := input.Config
+	env := input.Env
+	args := input.Args
+	debug := input.Debug
+	dryRun := input.DryRun
+	stdin := input.Stdin
+	stdout := input.Stdout
+	stderr := input.Stderr
+
 	homeDir, err := getHomeDir(env)
 	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
+		return 0, err
 	}
 
 	if len(args) == 0 {
-		fprintError(stderr, errors.New(errNoCommandMessage))
-
-		return 1
+		return 0, errors.New("no command specified: usage: agent-sandbox <command> [args]")
 	}
 
 	// Nested sandbox behavior: command wrappers are inherited from the outer
 	// sandbox. Inner sandboxes may add new wrappers for commands that are not
 	// already wrapped, but cannot override outer wrappers.
-	if isInsideSandbox() {
+	insideSandbox, err := isInsideSandbox()
+	if err != nil {
+		return 0, fmt.Errorf("checking if inside sandbox: %w", err)
+	}
+
+	if insideSandbox {
 		err = checkNestedSandboxDepth()
 		if err != nil {
-			fprintError(stderr, err)
-
-			return 1
+			return 0, err
 		}
 
 		cfg.Commands = filterNestedCommandRules(cfg.Commands)
-	}
-
-	err = validateCommandRules(cfg.Commands)
-	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
 	}
 
 	sandboxEnv := sandbox.Environment{
@@ -89,9 +95,7 @@ func ExecuteSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 
 	sb, err := newSandbox(cfg, sandboxEnv, debug)
 	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
+		return 0, err
 	}
 
 	cmd, cleanup, err := sb.Command(ctx, args)
@@ -103,9 +107,7 @@ func ExecuteSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 			}
 		}
 
-		fprintError(stderr, err)
-
-		return 1
+		return 0, fmt.Errorf("preparing sandbox command: %w", err)
 	}
 
 	cmd.Stdin = stdin
@@ -121,10 +123,8 @@ func ExecuteSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 		}()
 	}
 
-	bwrapArgs := bwrapArgsFromCmd(cmd.Args)
-
-	DebugCommandWrappers(debug, cfg.Commands)
-	DebugBwrapArgs(debug, bwrapArgs)
+	args = cmd.Args
+	debug.LogSandboxCommand(cfg.Commands, args)
 
 	if debug != nil && debug.Enabled() {
 		debug.Phase("process")
@@ -132,33 +132,95 @@ func ExecuteSandbox(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 	}
 
 	if dryRun {
-		printDryRunOutput(stdout, bwrapArgs, args)
+		fprintf(stdout, "%s\n", strings.Join(args, " "))
 
-		return 0
+		return 0, nil
 	}
 
 	exitCode, err := runBwrapProcess(ctx, cmd, stderr, debug)
 	if err != nil {
-		fprintError(stderr, err)
-
-		return 1
+		return 0, err
 	}
 
-	return exitCode
+	return exitCode, nil
 }
 
-func getHomeDir(env map[string]string) (string, error) {
-	// Escape hatch for our env abstraction (os.UserHomeDir() checks $HOME aswell)
-	if home := env["HOME"]; home != "" {
-		return home, nil
+// runBwrapProcess starts the bwrap process and handles shutdown signals.
+func runBwrapProcess(ctx context.Context, cmd *exec.Cmd, stderr io.Writer, _ *DebugLogger) (int, error) {
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("context cancelled: %w", ctx.Err())
 	}
 
-	home, err := os.UserHomeDir()
+	err := cmd.Start()
 	if err != nil {
-		return "", fmt.Errorf("determining home directory: %w", err)
+		return 1, fmt.Errorf("starting bwrap: %w (check if kernel supports user namespaces: sysctl kernel.unprivileged_userns_clone)", err)
 	}
 
-	return home, nil
+	extractExitCode := func(waitErr error) (int, error) {
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				return exitErr.ExitCode(), nil
+			}
+
+			return 1, fmt.Errorf("waiting for bwrap: %w", waitErr)
+		}
+
+		return 0, nil
+	}
+
+	killCtx, ok := ctx.Value(killCtxKey{}).(context.Context)
+	if !ok {
+		killCtx = context.Background()
+	}
+
+	waitDone := make(chan error, 1)
+
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	select {
+	case waitErr := <-waitDone:
+		return extractExitCode(waitErr)
+
+	case <-ctx.Done():
+		// Context cancelled - send SIGTERM for graceful shutdown.
+		if cmd.Process != nil {
+			err := cmd.Process.Signal(syscall.SIGTERM)
+			if err != nil {
+				fmt.Fprintf(stderr, "warning: failed to send SIGTERM: %v\n", err)
+			}
+		}
+
+		select {
+		case waitErr := <-waitDone:
+			return extractExitCode(waitErr)
+		case <-killCtx.Done():
+			if cmd.Process != nil {
+				err := cmd.Process.Kill()
+				if err != nil {
+					fmt.Fprintf(stderr, "warning: failed to send SIGKILL: %v\n", err)
+				}
+			}
+
+			<-waitDone
+
+			return 0, nil
+		}
+
+	case <-killCtx.Done():
+		if cmd.Process != nil {
+			err := cmd.Process.Kill()
+			if err != nil {
+				fmt.Fprintf(stderr, "warning: failed to send SIGKILL: %v\n", err)
+			}
+		}
+
+		<-waitDone
+
+		return 0, nil
+	}
 }
 
 func newSandbox(cfg *Config, env sandbox.Environment, debug *DebugLogger) (*sandbox.Sandbox, error) {
@@ -208,7 +270,12 @@ func newSandbox(cfg *Config, env sandbox.Environment, debug *DebugLogger) (*sand
 	// would otherwise hide the outer sandbox runtime (policies/real bins).
 	// Mount the outer runtime under /run/agent-sandbox/outer and let the launcher
 	// fall back to it when no inner policy exists.
-	if isInsideSandbox() {
+	insideSandbox, err := isInsideSandbox()
+	if err != nil {
+		return nil, fmt.Errorf("checking if inside sandbox: %w", err)
+	}
+
+	if insideSandbox {
 		outerRuntime := filepath.Join(runtimeRoot, "outer")
 		mounts = append(mounts,
 			sandbox.Dir(outerRuntime),
@@ -238,17 +305,47 @@ func newSandbox(cfg *Config, env sandbox.Environment, debug *DebugLogger) (*sand
 	}
 
 	if debug != nil && debug.Enabled() {
-		sbCfg.Debugf = func(format string, args ...any) {
-			debug.Logf(format, args...)
-		}
+		sbCfg.Debugf = debug.Logf
 	}
 
 	sb, err := sandbox.NewWithEnvironment(&sbCfg, env)
 	if err != nil {
-		return nil, fmt.Errorf("create sandbox: %w", err)
+		return nil, fmt.Errorf("creating sandbox: %w", err)
 	}
 
 	return sb, nil
+}
+
+func getSelfBinary() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locating agent-sandbox binary: %w", err)
+	}
+
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return "", fmt.Errorf("resolving binary path: %w", err)
+	}
+
+	self = filepath.Clean(self)
+	if self == "" {
+		return "", errors.New("locating binary: resolved to empty path")
+	}
+
+	info, err := os.Stat(self)
+	if err != nil {
+		return "", fmt.Errorf("statting binary %q: %w", self, err)
+	}
+
+	if info.IsDir() {
+		return "", fmt.Errorf("binary %q is a directory", self)
+	}
+
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("binary %q is not executable", self)
+	}
+
+	return self, nil
 }
 
 func effectivePresetsForCLI(presets []string) []string {
@@ -334,189 +431,6 @@ func buildSandboxCommandRules(commands map[string]CommandRule) ([]string, map[st
 	return block, wrappers, nil
 }
 
-func bwrapArgsFromCmd(args []string) []string {
-	if len(args) == 0 {
-		return nil
-	}
-
-	args = args[1:]
-	for i, a := range args {
-		if a == "--" {
-			return args[:i]
-		}
-	}
-
-	return args
-}
-
-// runBwrapProcess starts the bwrap process and handles shutdown signals.
-func runBwrapProcess(ctx context.Context, cmd *exec.Cmd, stderr io.Writer, _ *DebugLogger) (int, error) {
-	if ctx.Err() != nil {
-		return 0, fmt.Errorf("context cancelled: %w", ctx.Err())
-	}
-
-	err := cmd.Start()
-	if err != nil {
-		return 1, fmt.Errorf("starting bwrap: %w (check if kernel supports user namespaces: sysctl kernel.unprivileged_userns_clone)", err)
-	}
-
-	killCtx, ok := ctx.Value(killCtxKey{}).(context.Context)
-	if !ok {
-		killCtx = context.Background()
-	}
-
-	waitDone := make(chan error, 1)
-
-	go func() {
-		waitDone <- cmd.Wait()
-	}()
-
-	select {
-	case waitErr := <-waitDone:
-		return extractExitCode(waitErr)
-
-	case <-ctx.Done():
-		// Context cancelled - send SIGTERM for graceful shutdown.
-		if cmd.Process != nil {
-			err := cmd.Process.Signal(syscall.SIGTERM)
-			if err != nil {
-				fmt.Fprintf(stderr, "warning: failed to send SIGTERM: %v\n", err)
-			}
-		}
-
-		select {
-		case waitErr := <-waitDone:
-			return extractExitCode(waitErr)
-		case <-killCtx.Done():
-			if cmd.Process != nil {
-				err := cmd.Process.Kill()
-				if err != nil {
-					fmt.Fprintf(stderr, "warning: failed to send SIGKILL: %v\n", err)
-				}
-			}
-
-			<-waitDone
-
-			return 0, nil
-		}
-
-	case <-killCtx.Done():
-		if cmd.Process != nil {
-			err := cmd.Process.Kill()
-			if err != nil {
-				fmt.Fprintf(stderr, "warning: failed to send SIGKILL: %v\n", err)
-			}
-		}
-
-		<-waitDone
-
-		return 0, nil
-	}
-}
-
-func extractExitCode(waitErr error) (int, error) {
-	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			return exitErr.ExitCode(), nil
-		}
-
-		return 1, fmt.Errorf("waiting for bwrap: %w", waitErr)
-	}
-
-	return 0, nil
-}
-
-func getSelfBinary() (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("cannot locate agent-sandbox binary: %w", err)
-	}
-
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return "", fmt.Errorf("cannot resolve agent-sandbox binary path: %w", err)
-	}
-
-	self = filepath.Clean(self)
-	if self == "" {
-		return "", errors.New("cannot locate agent-sandbox binary")
-	}
-
-	info, err := os.Stat(self)
-	if err != nil {
-		return "", fmt.Errorf("cannot stat agent-sandbox binary %q: %w", self, err)
-	}
-
-	if info.IsDir() {
-		return "", fmt.Errorf("agent-sandbox binary %q is a directory", self)
-	}
-
-	if info.Mode().Perm()&0o111 == 0 {
-		return "", fmt.Errorf("agent-sandbox binary %q is not executable", self)
-	}
-
-	return self, nil
-}
-
-// validateCommandRules checks that command presets are used correctly.
-// For example, @git can only be used with the "git" command.
-func validateCommandRules(commands map[string]CommandRule) error {
-	for cmdName, rule := range commands {
-		if rule.Kind != CommandRulePreset {
-			continue
-		}
-
-		presetCmd := strings.TrimPrefix(rule.Value, "@")
-		if cmdName != presetCmd {
-			return fmt.Errorf("%s: %s preset can only be used for '%s' command, not '%s'",
-				errInvalidCommandPresetMessage, rule.Value, presetCmd, cmdName)
-		}
-	}
-
-	return nil
-}
-
-// printDryRunOutput formats and prints the bwrap command for dry-run mode.
-// The output is shell-compatible and can be copy-pasted to run manually.
-func printDryRunOutput(output io.Writer, bwrapArgs []string, command []string) {
-	fprintf(output, "bwrap \\\n")
-
-	for _, arg := range bwrapArgs {
-		fprintf(output, "  %s \\\n", shellQuoteIfNeeded(arg))
-	}
-
-	fprintf(output, "  --")
-
-	for _, arg := range command {
-		fprintf(output, " %s", shellQuoteIfNeeded(arg))
-	}
-
-	fprintln(output)
-}
-
-// shellQuoteIfNeeded returns the string quoted if it contains special characters,
-// otherwise returns it unchanged. This makes the output shell-safe.
-func shellQuoteIfNeeded(str string) string {
-	for _, c := range str {
-		if !isShellSafeChar(c) {
-			escaped := strings.ReplaceAll(str, "'", "'\"'\"'")
-
-			return "'" + escaped + "'"
-		}
-	}
-
-	return str
-}
-
-// isShellSafeChar returns true if the character doesn't need quoting in shell.
-func isShellSafeChar(c rune) bool {
-	return (c >= 'a' && c <= 'z') ||
-		(c >= 'A' && c <= 'Z') ||
-		(c >= '0' && c <= '9') ||
-		c == '-' || c == '_' || c == '.' || c == '/' || c == ':' || c == '='
-}
-
 // getLoadedConfigPaths returns the paths of all loaded config files.
 // This is used to protect config files from modification inside the sandbox.
 func getLoadedConfigPaths(cfg *Config) []string {
@@ -530,6 +444,20 @@ func getLoadedConfigPaths(cfg *Config) []string {
 	}
 
 	return paths
+}
+
+func getHomeDir(env map[string]string) (string, error) {
+	// Escape hatch for our env abstraction (os.UserHomeDir() checks $HOME aswell)
+	if home := env["HOME"]; home != "" {
+		return home, nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("determining home directory: %w", err)
+	}
+
+	return home, nil
 }
 
 func withAgentSandboxOnPath(env map[string]string) map[string]string {
@@ -592,39 +520,8 @@ func hasWrapperMarker(runtimeRoot, cmdName string) bool {
 	}
 
 	_, presetErr := os.Stat(filepath.Join(runtimeRoot, "presets", cmdName))
-	if presetErr == nil {
-		return true
-	}
 
-	return false
-}
-
-// isInsideSandbox checks if the current process is running inside an agent-sandbox
-// sandbox by testing for the presence of the sandbox-mounted agent-sandbox binary.
-func isInsideSandbox() bool {
-	_, err := os.Stat(sandboxBinaryPath)
-
-	return err == nil
-}
-
-func checkNestedSandboxDepth() error {
-	if !isInsideSandbox() {
-		return nil
-	}
-
-	// The launcher only searches the current runtime and one outer runtime.
-	// A third-level sandbox would skip top-level policies, so block it here.
-	outerBinary := filepath.Join(filepath.Dir(sandboxBinaryPath), "outer", "agent-sandbox")
-	_, err := os.Stat(outerBinary)
-	if err == nil {
-		return errors.New(errNestedSandboxDepthMessage)
-	}
-
-	if os.IsNotExist(err) {
-		return nil
-	}
-
-	return fmt.Errorf("check nested sandbox depth: %w", err)
+	return presetErr == nil
 }
 
 func isWrappedCommandName(cmdName string) bool {
@@ -636,4 +533,45 @@ func isWrappedCommandName(cmdName string) bool {
 	}
 
 	return false
+}
+
+// isInsideSandbox checks if the current process is running inside an agent-sandbox
+// sandbox by testing for the presence of the sandbox-mounted agent-sandbox binary.
+func isInsideSandbox() (bool, error) {
+	_, err := os.Stat(sandboxBinaryPath)
+	if err == nil {
+		return true, nil
+	}
+
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("statting sandbox binary: %w", err)
+}
+
+func checkNestedSandboxDepth() error {
+	inside, err := isInsideSandbox()
+	if err != nil {
+		return fmt.Errorf("checking if inside sandbox: %w", err)
+	}
+
+	if !inside {
+		return nil
+	}
+
+	// The launcher only searches the current runtime and one outer runtime.
+	// A third-level sandbox would skip top-level policies, so block it here.
+	outerBinary := filepath.Join(filepath.Dir(sandboxBinaryPath), "outer", "agent-sandbox")
+
+	_, err = os.Stat(outerBinary)
+	if err == nil {
+		return errors.New("nested sandboxes beyond one level are not supported")
+	}
+
+	if os.IsNotExist(err) {
+		return nil
+	}
+
+	return fmt.Errorf("checking nested sandbox depth: %w", err)
 }

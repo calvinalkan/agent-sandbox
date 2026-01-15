@@ -41,15 +41,30 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 		return 1
 	}
 
+	// As a first step, check if we're in "multicall mode".
+	//
+	// When a command like "git" is wrapped, the agent-sandbox binary is mounted
+	// over the real git binary. When git is invoked, argv[0] is "git" but the
+	// actual binary is agent-sandbox. The multicall dispatcher detects this
+	// (argv[0] != "agent-sandbox") and routes to the appropriate handler.
+	//
+	// See: multicall.go
 	if len(args) > 0 {
 		invoked := filepath.Base(args[0])
-		if invoked != agentSandboxExecutableName && isInsideSandbox() && isWrappedCommandName(invoked) {
-			err := runMulticall(context.Background(), invoked, args[1:], stdin, stdout, stderr, env)
+
+		insideSandbox, insideErr := isInsideSandbox()
+		if insideErr != nil {
+			fprintError(stderr, fmt.Errorf("checking if inside sandbox: %w", insideErr))
+
+			return 1
+		}
+
+		if invoked != agentSandboxExecutableName && insideSandbox && isWrappedCommandName(invoked) {
+			err = runMulticall(context.Background(), invoked, args[1:], stdin, stdout, stderr, env)
 			if err != nil {
 				var exitErr *exec.ExitError
 				if errors.As(err, &exitErr) {
-					// Pass through errors from scripts without
-					// printing to stderr again.
+					// Pass through errors from scripts without printing to stderr (its already connected)
 					return exitErr.ExitCode()
 				}
 
@@ -101,7 +116,13 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 	}
 
 	if *flagCheck {
-		inside := isInsideSandbox()
+		inside, insideErr := isInsideSandbox()
+		if insideErr != nil {
+			fprintError(stderr, fmt.Errorf("checking if inside sandbox: %w", insideErr))
+
+			return 1
+		}
+
 		if inside {
 			fprintln(stdout, "inside sandbox")
 
@@ -138,13 +159,10 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 	var debug *DebugLogger
 	if debugEnabled {
 		debug = NewDebugLogger(stderr)
-		debugVersion(debug)
+		debug.Version()
 	}
 
-	debugConfigLoading(debug, &cfg)
-	debugConfigMerge(debug, &cfg, flags)
-
-	dryRun, _ := flags.GetBool("dry-run")
+	debug.Config(&cfg, flags)
 
 	// Create nested contexts for two-stage shutdown:
 	// - termCtx cancellation triggers SIGTERM (graceful shutdown)
@@ -157,26 +175,62 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, args []string, env map[strin
 
 	ctx := WithKillContext(termCtx, killCtx)
 
-	done := make(chan int, 1)
+	type sandboxResult struct {
+		exitCode int
+		err      error
+	}
+
+	done := make(chan sandboxResult, 1)
+
+	dryRun, _ := flags.GetBool("dry-run")
 
 	go func() {
-		done <- ExecuteSandbox(ctx, stdin, stdout, stderr, &cfg, env, commandAndArgs, debug, dryRun)
+		exitCode, execErr := ExecuteSandbox(ctx, &ExecuteSandboxInput{
+			Stdin:  stdin,
+			Stdout: stdout,
+			Stderr: stderr,
+			Config: &cfg,
+			Env:    env,
+			Args:   commandAndArgs,
+			Debug:  debug,
+			DryRun: dryRun,
+		})
+		done <- sandboxResult{exitCode: exitCode, err: execErr}
 	}()
 
 	if sigCh == nil {
-		return <-done
+		result := <-done
+		if result.err != nil {
+			fprintError(stderr, result.err)
+
+			return 1
+		}
+
+		return result.exitCode
 	}
 
 	select {
-	case exitCode := <-done:
-		return exitCode
+	case result := <-done:
+		if result.err != nil {
+			fprintError(stderr, result.err)
+
+			return 1
+		}
+
+		return result.exitCode
 	case <-sigCh:
 		fprintln(stderr, "Interrupted, waiting up to 10s for cleanup... (Ctrl+C again to force exit)")
 		terminate()
 	}
 
 	select {
-	case <-done:
+	case result := <-done:
+		if result.err != nil {
+			fprintError(stderr, result.err)
+
+			return 1
+		}
+
 		fprintln(stderr, "Cleanup complete.")
 
 		return exitCodeSIGINT
@@ -259,16 +313,16 @@ func isTerminal() bool {
 
 func checkPlatformPrerequisites() error {
 	if runtime.GOOS != "linux" {
-		return errors.New(errNotLinuxMessage)
+		return errors.New("checking platform prerequisites: requires Linux (bwrap uses Linux namespaces)")
 	}
 
 	if os.Getuid() == 0 {
-		return errors.New(errRunningAsRootMessage)
+		return errors.New("checking platform prerequisites: cannot run as root (use a regular user account)")
 	}
 
 	_, err := exec.LookPath("bwrap")
 	if err != nil {
-		return errors.New(errBwrapNotFoundMessage)
+		return errors.New("checking platform prerequisites: bwrap not found in PATH (try installing with: sudo apt install bubblewrap)")
 	}
 
 	return nil

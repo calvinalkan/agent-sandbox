@@ -166,6 +166,7 @@ linters:
     goconst:
       numbers: true
       find-duplicates: true
+      min-occurrences: 5
     usestdlibvars:
       time-month: true
       time-layout: true

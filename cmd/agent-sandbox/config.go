@@ -74,6 +74,8 @@ type CommandRule struct {
 	Value string // used for Preset (e.g., "@git") and Script (e.g., "/path/to/wrapper")
 }
 
+const errInvalidCommandPresetMessage = "command preset can only be used for its matching command"
+
 // UnmarshalJSON implements custom JSON unmarshaling for commandRule.
 // Accepts boolean or string values as per spec.
 func (r *CommandRule) UnmarshalJSON(data []byte) error {
@@ -198,9 +200,9 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 			configPath = filepath.Join(workDir, configPath)
 		}
 
-		explicitCfg, err := parseConfigFile(configPath)
-		if err != nil {
-			return Config{}, err
+		explicitCfg, parseErr := parseConfigFile(configPath)
+		if parseErr != nil {
+			return Config{}, parseErr
 		}
 
 		// Store explicit config filesystem paths as "project" for source tracking
@@ -229,10 +231,15 @@ func LoadConfig(input LoadConfigInput) (Config, error) {
 	cfg.EffectiveCwd = workDir
 
 	if input.CLIFlags != nil {
-		err := applyCLIFlags(&cfg, input.CLIFlags)
+		err = applyCLIFlags(&cfg, input.CLIFlags)
 		if err != nil {
 			return Config{}, err
 		}
+	}
+
+	err = validateCommandRules(cfg.Commands)
+	if err != nil {
+		return Config{}, err
 	}
 
 	return cfg, nil
@@ -342,6 +349,24 @@ func parseCmdFlag(commands map[string]CommandRule, value string) error {
 		}
 
 		commands[key] = rule
+	}
+
+	return nil
+}
+
+// validateCommandRules checks that command presets are used correctly.
+// For example, @git can only be used with the "git" command.
+func validateCommandRules(commands map[string]CommandRule) error {
+	for cmdName, rule := range commands {
+		if rule.Kind != CommandRulePreset {
+			continue
+		}
+
+		presetCmd := strings.TrimPrefix(rule.Value, "@")
+		if cmdName != presetCmd {
+			return fmt.Errorf("%s: %s preset can only be used for '%s' command, not '%s'",
+				errInvalidCommandPresetMessage, rule.Value, presetCmd, cmdName)
+		}
 	}
 
 	return nil

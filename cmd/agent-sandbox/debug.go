@@ -36,37 +36,11 @@ func (d *DebugLogger) Phase(name string) {
 			_, _ = fmt.Fprintln(d.output)
 		}
 
-		heading := phaseHeading(trimmed)
-		if heading != "" {
-			_, _ = fmt.Fprintln(d.output, heading)
-		}
+		_, _ = fmt.Fprintln(d.output, trimmed)
 	}
 
 	d.phase = trimmed
 	d.lastPhase = trimmed
-}
-
-var phaseHeadings = map[string]string{
-	"bwrap-args":       "bwrap Arguments",
-	"command-wrappers": "Command Wrappers",
-	"config-loading":   "Config Loading",
-}
-
-func phaseHeading(phase string) string {
-	if heading, ok := phaseHeadings[phase]; ok {
-		return heading
-	}
-
-	parts := strings.Split(phase, "-")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-
-	return strings.Join(parts, " ")
 }
 
 func (d *DebugLogger) Logf(format string, args ...any) {
@@ -88,77 +62,89 @@ func (d *DebugLogger) Logf(format string, args ...any) {
 	_, _ = fmt.Fprintf(d.output, prefix+format+"\n", args...)
 }
 
-func debugConfigLoading(debug *DebugLogger, cfg *Config) {
-	if debug == nil || !debug.Enabled() {
-		return
-	}
-
-	debug.Phase("config-loading")
-
-	if len(cfg.LoadedConfigFiles) == 0 {
-		debug.Logf("No config files loaded (using defaults)")
-
-		return
-	}
-
-	if path, ok := cfg.LoadedConfigFiles["global"]; ok {
-		debug.Logf("Global config: %s", path)
-	} else {
-		debug.Logf("Global config: (not found)")
-	}
-
-	if path, ok := cfg.LoadedConfigFiles["explicit"]; ok {
-		debug.Logf("Explicit config (--config): %s", path)
-	} else if path, ok := cfg.LoadedConfigFiles["project"]; ok {
-		debug.Logf("Project config: %s", path)
-	} else {
-		debug.Logf("Project config: (not found)")
-	}
-}
-
 type FlagChecker interface {
 	Changed(name string) bool
 }
 
-func debugConfigMerge(debug *DebugLogger, cfg *Config, flags FlagChecker) {
-	if debug == nil || !debug.Enabled() {
+func (d *DebugLogger) Config(cfg *Config, flags FlagChecker) {
+	if d == nil || !d.Enabled() {
 		return
 	}
 
-	debug.Phase("config-merge")
+	d.Phase("config-load")
 
-	networkSource := configSource(cfg.LoadedConfigFiles, "network", flags)
+	if len(cfg.LoadedConfigFiles) == 0 {
+		d.Logf("No config files loaded (using defaults)")
+	} else {
+		if path, ok := cfg.LoadedConfigFiles["global"]; ok {
+			d.Logf("Global config: %s", path)
+		} else {
+			d.Logf("Global config: (not found)")
+		}
+
+		if path, ok := cfg.LoadedConfigFiles["explicit"]; ok {
+			d.Logf("Explicit config (--config): %s", path)
+		} else if path, ok := cfg.LoadedConfigFiles["project"]; ok {
+			d.Logf("Project config: %s", path)
+		} else {
+			d.Logf("Project config: (not found)")
+		}
+	}
+
+	d.Phase("config-merge")
+
+	networkSource := _configSource(cfg.LoadedConfigFiles, "network", flags)
 
 	networkVal := true
 	if cfg.Network != nil {
 		networkVal = *cfg.Network
 	}
 
-	debug.Logf("network: %t (%s)", networkVal, networkSource)
+	d.Logf("network: %t (%s)", networkVal, networkSource)
 
-	dockerSource := configSource(cfg.LoadedConfigFiles, "docker", flags)
+	dockerSource := _configSource(cfg.LoadedConfigFiles, "docker", flags)
 
 	dockerVal := false
 	if cfg.Docker != nil {
 		dockerVal = *cfg.Docker
 	}
 
-	debug.Logf("docker: %t (%s)", dockerVal, dockerSource)
+	d.Logf("docker: %t (%s)", dockerVal, dockerSource)
 
 	if len(cfg.Filesystem.Presets) > 0 {
-		debug.Logf("filesystem.presets: %v", cfg.Filesystem.Presets)
+		d.Logf("filesystem.presets: %v", cfg.Filesystem.Presets)
 	}
 
 	if len(cfg.Commands) > 0 {
-		debug.Logf("commands:")
+		d.Logf("commands:")
 
 		for cmd, rule := range cfg.Commands {
-			debug.Logf("%s: %s", cmd, commandRuleDescription(rule))
+			d.Logf("%s: %s", cmd, _commandRuleDescription(rule))
 		}
 	}
 }
 
-func configSource(loadedFiles map[string]string, fieldName string, flags FlagChecker) string {
+func (d *DebugLogger) LogSandboxCommand(commands map[string]CommandRule, args []string) {
+	if d == nil || !d.Enabled() {
+		return
+	}
+
+	d._logCommandWrappers(commands)
+	d._logBwrapArgs(args)
+}
+
+func (d *DebugLogger) Version() {
+	if d == nil || !d.Enabled() {
+		return
+	}
+
+	d.Phase("version")
+	d.Logf("%s", formatVersion())
+}
+
+// Internal helper functions
+
+func _configSource(loadedFiles map[string]string, fieldName string, flags FlagChecker) string {
 	if flags != nil && flags.Changed(fieldName) {
 		return "cli"
 	}
@@ -178,7 +164,7 @@ func configSource(loadedFiles map[string]string, fieldName string, flags FlagChe
 	return "default"
 }
 
-func commandRuleDescription(rule CommandRule) string {
+func _commandRuleDescription(rule CommandRule) string {
 	switch rule.Kind {
 	case CommandRuleExplicitAllow:
 		return "raw (no wrapper)"
@@ -193,30 +179,22 @@ func commandRuleDescription(rule CommandRule) string {
 	}
 }
 
-func DebugCommandWrappers(debug *DebugLogger, commands map[string]CommandRule) {
-	if debug == nil || !debug.Enabled() {
-		return
-	}
-
-	debug.Phase("command-wrappers")
+func (d *DebugLogger) _logCommandWrappers(commands map[string]CommandRule) {
+	d.Phase("command-wrappers")
 
 	if len(commands) == 0 {
-		debug.Logf("No command wrappers configured")
+		d.Logf("No command wrappers configured")
 
 		return
 	}
 
 	for cmd, rule := range commands {
-		debug.Logf("%s: %s", cmd, commandRuleDescription(rule))
+		d.Logf("%s: %s", cmd, _commandRuleDescription(rule))
 	}
 }
 
-func DebugBwrapArgs(debug *DebugLogger, args []string) {
-	if debug == nil || !debug.Enabled() {
-		return
-	}
-
-	debug.Phase("bwrap-args")
+func (d *DebugLogger) _logBwrapArgs(args []string) {
+	d.Phase("bwrap-args")
 
 	idx := 0
 	for idx < len(args) {
@@ -229,21 +207,12 @@ func DebugBwrapArgs(debug *DebugLogger, args []string) {
 			}
 
 			line := append([]string{flagArg}, args[idx+1:next]...)
-			debug.Logf("%s", strings.Join(line, " "))
+			d.Logf("%s", strings.Join(line, " "))
 
 			idx = next
 		} else {
-			debug.Logf("%s", args[idx])
+			d.Logf("%s", args[idx])
 			idx++
 		}
 	}
-}
-
-func debugVersion(debug *DebugLogger) {
-	if debug == nil || !debug.Enabled() {
-		return
-	}
-
-	debug.Phase("version")
-	debug.Logf("%s", formatVersion())
 }

@@ -108,8 +108,9 @@ This does not affect output from the sandboxed process itself.
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Error (check stderr for details) |
+| 1 | Sandbox setup error (check stderr for details) |
 | 130 | Interrupted (SIGINT/SIGTERM) |
+| other | Propagated exit code from the sandboxed command |
 
 For `--check` flag: 0 = inside sandbox, 1 = outside sandbox.
 
@@ -119,9 +120,9 @@ For `--check` flag: 0 = inside sandbox, 1 = outside sandbox.
 
 When `agent-sandbox` receives an interrupt signal (SIGINT/SIGTERM):
 
-1. Signal is forwarded to the sandboxed process
+1. Cancels sandbox execution and sends SIGTERM to the `bwrap` process (the sandboxed command may or may not receive the signal depending on process-group delivery)
 2. Waits up to 10 seconds for graceful termination
-3. A second interrupt forces immediate exit
+3. A second interrupt or timeout sends SIGKILL to the `bwrap` process and forces exit
 4. Exit code is 130
 
 ---
@@ -133,7 +134,7 @@ When `agent-sandbox` receives an interrupt signal (SIGINT/SIGTERM):
 1. Built-in defaults
 2. Global config (always loaded if exists, even with `-c`)
 3. Project config OR `-c` path (one or the other, not both):
-   - Default: loads `.agent-sandbox` from current directory (if exists)
+   - Default: loads `.agent-sandbox.json` or `.agent-sandbox.jsonc` from current directory (if exists)
    - With `-c PATH`: loads PATH instead, project config is ignored
 4. CLI flags (highest priority)
 
@@ -146,7 +147,7 @@ When `agent-sandbox` receives an interrupt signal (SIGINT/SIGTERM):
 
 Each location supports either `.json` or `.jsonc` extension, but not both. If both exist, it's an error.
 
-**Format:** `.json` files must be valid JSON. `.jsonc` files support `//` and `/* */` comments.
+**Format:** Both `.json` and `.jsonc` files accept JSONC (`//` and `/* */` comments, trailing commas).
 
 **Example:**
 ```jsonc
@@ -180,7 +181,7 @@ Three access levels for paths:
 |-------|---------|
 | `ro` | Read-only (can read, cannot write) |
 | `rw` | Read-write (can read and write) |
-| `exclude` | Hidden (cannot see or access) |
+| `exclude` | Hidden contents (masked by empty file/dir; path may remain detectable) |
 
 **Config structure:**
 ```jsonc
@@ -194,7 +195,7 @@ Three access levels for paths:
 }
 ```
 
-**Default:** `@all` preset is always applied. User config adds paths or removes presets with `!@preset`.
+**Default:** `@all` is applied when presets are not specified. Use `!@all` to disable defaults (then add desired presets); use `!@preset` to remove individual defaults.
 
 **Missing path behavior:**
 - `filesystem.ro`/`rw`/`exclude` and `--ro`/`--rw`/`--exclude` ignore missing paths and globs that match nothing (best-effort).
@@ -254,7 +255,7 @@ Presets are built-in named configurations for filesystem access. Users cannot de
 }
 ```
 
-**Default:** `@all` is always applied. Use `!@preset` to exclude.
+**Default:** `@all` is applied when presets are not specified. Use `!@all` to disable defaults; use `!@preset` to exclude individual presets.
 
 **Built-in presets:**
 
@@ -485,8 +486,8 @@ All environment variables from the parent process are passed through to the sand
 | Guarantee | Description |
 |-----------|-------------|
 | `ro` paths | Cannot be modified, deleted, or overwritten |
-| `exclude` paths | Cannot be read, listed, or detected |
-| Config files | `.agent-sandbox.json`/`.jsonc` and global config are read-only inside sandbox |
+| `exclude` paths | Contents cannot be read (paths may be detectable as empty placeholders) |
+| Config files | `.agent-sandbox.json`/`.jsonc` and global config are read-only when present; missing config files can be created and affect future runs |
 | Sandbox detection | `--check` result cannot be faked from inside |
 | Blocked commands | Cannot execute when wrapper set to `false` or operation forbidden |
 | Network (disabled) | No network access when `--network=false` |
