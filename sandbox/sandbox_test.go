@@ -43,7 +43,7 @@ func Test_Sandbox_CommandWrappers_BuildMounts_When_Configured(t *testing.T) {
 
 		// ELF launcher is mounted at target path, deny script at runtime path
 		mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rmPath})
-		mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/rm"})
+		mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/rm"})
 	})
 
 	t.Run("Mounts_Wrapper_And_Real_Binary_When_ScriptRule_Configured", func(t *testing.T) {
@@ -79,9 +79,9 @@ func Test_Sandbox_CommandWrappers_BuildMounts_When_Configured(t *testing.T) {
 
 		mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox"})
 		mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/bin"})
-		mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/policies"})
+		mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/wrappers"})
 		mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", npmPath, "/run/agent-sandbox/bin/npm"})
-		mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/npm"})
+		mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/npm"})
 		mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", npmPath})
 	})
 
@@ -261,11 +261,11 @@ func Test_Sandbox_CommandWrappers_Wraps_All_Commands_When_Multiple_Deny_Rules_Co
 		t.Fatalf("expected 2 ExtraFiles, got %d", got)
 	}
 
-	// Launcher mounted at target paths, policies at runtime paths
+	// Launcher mounted at target paths, wrappers at runtime paths
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", curlPath})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rmPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/curl"})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/policies/rm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/curl"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/wrappers/rm"})
 }
 
 func Test_Sandbox_CommandWrappers_Mounts_All_Wrappers_When_Deny_And_Script_Rules_Configured(t *testing.T) {
@@ -317,15 +317,15 @@ func Test_Sandbox_CommandWrappers_Mounts_All_Wrappers_When_Deny_And_Script_Rules
 
 	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox"})
 	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/bin"})
-	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/policies"})
-	// Launcher at targets, real binary + policies at runtime paths
+	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/wrappers"})
+	// Launcher at targets, real binary + wrappers at runtime paths
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", npmPath})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rmPath})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", npmPath, "/run/agent-sandbox/bin/npm"})
 	// Block commands are processed first, then wrappers (both sorted alphabetically)
 	// So rm (blocked) is at FD 3, npm (wrapped) is at FD 4
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/rm"})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/policies/npm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/rm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/wrappers/npm"})
 }
 
 func Test_Sandbox_CommandWrappers_Wraps_All_Path_Hits_When_Deny_Rule_Configured(t *testing.T) {
@@ -374,10 +374,10 @@ func Test_Sandbox_CommandWrappers_Wraps_All_Path_Hits_When_Deny_Rule_Configured(
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at both target paths, single policy at runtime path
+	// Launcher at both target paths, single wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rm1})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rm2})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/rm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/rm"})
 }
 
 func Test_Sandbox_CommandWrappers_Dedupes_Path_Entries_When_Path_Has_Duplicates(t *testing.T) {
@@ -419,9 +419,9 @@ func Test_Sandbox_CommandWrappers_Dedupes_Path_Entries_When_Path_Has_Duplicates(
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at target, policy at runtime path
+	// Launcher at target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rmPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/rm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/rm"})
 }
 
 func Test_Sandbox_CommandWrappers_Dedupes_Targets_When_Path_Uses_Symlink(t *testing.T) {
@@ -469,9 +469,9 @@ func Test_Sandbox_CommandWrappers_Dedupes_Targets_When_Path_Uses_Symlink(t *test
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at real target, policy at runtime path
+	// Launcher at real target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", realPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/mybin"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
 
 	if slices.Contains(cmd.Args, link) {
 		t.Fatalf("did not expect wrapper mount to symlink path %q; args: %v", link, cmd.Args)
@@ -528,9 +528,9 @@ func Test_Sandbox_CommandWrappers_Dedupes_Targets_When_Path_Uses_Duplicate_Symli
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at real target, policy at runtime path
+	// Launcher at real target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", realPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/mybin"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
 
 	if slices.Contains(cmd.Args, link1) || slices.Contains(cmd.Args, link2) {
 		t.Fatalf("did not expect wrapper mount to symlink paths; args: %v", cmd.Args)
@@ -583,9 +583,9 @@ func Test_Sandbox_CommandWrappers_Resolves_Targets_When_Path_Uses_Chained_Symlin
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at real target, policy at runtime path
+	// Launcher at real target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", realPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/mybin"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
 
 	if slices.Contains(cmd.Args, intermediate) || slices.Contains(cmd.Args, finalLink) {
 		t.Fatalf("did not expect wrapper mount to symlink paths; args: %v", cmd.Args)
@@ -632,9 +632,9 @@ func Test_Sandbox_CommandWrappers_Resolves_Targets_When_Path_Uses_Relative_Symli
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at real target, policy at runtime path
+	// Launcher at real target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", realPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/mybin"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
 
 	if slices.Contains(cmd.Args, link) {
 		t.Fatalf("did not expect wrapper mount to symlink path %q; args: %v", link, cmd.Args)
@@ -786,9 +786,9 @@ func Test_Sandbox_CommandWrappers_Ignores_NonExecutable_When_Executable_Present(
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at target, policy at runtime path
+	// Launcher at target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", execPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/rm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/rm"})
 
 	if slices.Contains(cmd.Args, nonexecPath) {
 		t.Fatalf("did not expect wrapper mount to non-executable path %q; args: %v", nonexecPath, cmd.Args)
@@ -839,9 +839,9 @@ func Test_Sandbox_CommandWrappers_Ignores_Directory_When_Executable_Present(t *t
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at target, policy at runtime path
+	// Launcher at target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", execPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/rm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/rm"})
 
 	if slices.Contains(cmd.Args, filepath.Join(dirPath, "rm")) {
 		t.Fatalf("did not expect wrapper mount to directory path %q; args: %v", filepath.Join(dirPath, "rm"), cmd.Args)
@@ -887,9 +887,9 @@ func Test_Sandbox_CommandWrappers_Ignores_Empty_Path_Entries_When_Path_Has_Execu
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at target, policy at runtime path
+	// Launcher at target, wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rmPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/rm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/rm"})
 }
 
 func Test_Sandbox_CommandWrappers_Wraps_All_Targets_When_Path_Has_Mixed_Symlinks(t *testing.T) {
@@ -936,15 +936,15 @@ func Test_Sandbox_CommandWrappers_Wraps_All_Targets_When_Path_Has_Mixed_Symlinks
 		t.Cleanup(func() { _ = cleanup() })
 	}
 
-	// 1 ExtraFile: shared policy for mybin command
+	// 1 ExtraFile: shared wrapper for mybin command
 	if got := len(cmd.ExtraFiles); got != 1 {
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
 
-	// Launcher at both target paths, single policy at runtime path
+	// Launcher at both target paths, single wrapper at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", primary})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", alternateTarget})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/mybin"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
 
 	if slices.Contains(cmd.Args, symlinkPath) {
 		t.Fatalf("did not expect wrapper mount to symlink path %q; args: %v", symlinkPath, cmd.Args)
@@ -996,7 +996,7 @@ func Test_Sandbox_CommandWrappers_Preserves_Path_Order_When_Multiple_Targets(t *
 		t.Cleanup(func() { _ = cleanup() })
 	}
 
-	// 1 ExtraFile: shared policy for mybin command
+	// 1 ExtraFile: shared wrapper for mybin command
 	if got := len(cmd.ExtraFiles); got != 1 {
 		t.Fatalf("expected 1 ExtraFile, got %d", got)
 	}
@@ -1014,8 +1014,8 @@ func Test_Sandbox_CommandWrappers_Preserves_Path_Order_When_Multiple_Targets(t *
 		t.Fatalf("expected launcher mounts in PATH order; args: %v", cmd.Args)
 	}
 
-	// Single policy at runtime path
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/mybin"})
+	// Single wrapper at runtime path
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
 }
 
 func Test_Sandbox_CommandWrappers_Returns_Error_When_Path_Has_No_Executable(t *testing.T) {
@@ -1106,11 +1106,11 @@ func Test_Sandbox_CommandWrappers_Mounts_Wrapper_And_Real_Binary_When_Script_Pat
 
 	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox"})
 	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/bin"})
-	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/policies"})
-	// Launcher at target, real binary + policy at runtime paths
+	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/run/agent-sandbox/wrappers"})
+	// Launcher at target, real binary + wrapper at runtime paths
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", npmPath})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", npmPath, "/run/agent-sandbox/bin/npm"})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/npm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/npm"})
 }
 
 func Test_Sandbox_CommandWrappers_Returns_Error_When_Path_Missing_Or_Empty(t *testing.T) {
@@ -1188,10 +1188,10 @@ func Test_Sandbox_ExcludeRules_MaskPaths_When_Configured(t *testing.T) {
 			t.Fatalf("expected 2 ExtraFiles (empty exclusion + deny script), got %d", got)
 		}
 
-		// Launcher at target, exclude + policy via ro-bind-data
+		// Launcher at target, exclude + wrapper via ro-bind-data
 		mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", rmPath})
 		mustContainSubsequence(t, cmd.Args, []string{"--perms", "0000", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), secretPath})
-		mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/policies/rm"})
+		mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/wrappers/rm"})
 	})
 
 	t.Run("ExcludeFile_Allows_Missing_Path_When_Not_Found", func(t *testing.T) {
@@ -1721,7 +1721,7 @@ func Test_Sandbox_CommandWrappers_Always_Expose_RealBinary_When_Wrapped(t *testi
 
 	// Launcher at target, real binary always exposed at runtime path
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", npmPath})
-	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/policies/npm"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/npm"})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", npmPath, "/run/agent-sandbox/bin/npm"})
 }
 

@@ -202,7 +202,7 @@ is replaced with either:
 - an ELF multicall launcher binary via `--ro-bind` (preferred when
   `CommandLauncherBinary` is set).
 
-Policy and preset metadata is materialized under `/run/agent-sandbox` using
+Wrapper and preset metadata is materialized under `/run/agent-sandbox` using
 `--ro-bind-data` (script/marker content is provided via an inherited FD, typically
 backed by memfd).
 
@@ -212,7 +212,7 @@ backed by memfd).
 ├── agent-sandbox                  # mounted agent-sandbox binary (for check + launcher)
 ├── bin/
 │   └── <cmd>                      # real binary (only mounted when needed)
-├── policies/
+├── wrappers/
 │   └── <cmd>                      # deny/custom wrapper scripts
 └── presets/
     └── <cmd>                      # marker files for built-in presets
@@ -220,15 +220,15 @@ backed by memfd).
 /usr/bin/git (and other resolved paths)  # replaced by per-path shim or launcher
 ```
 
-Note: `/run/agent-sandbox` and its subdirectories (`bin`, `policies`, `presets`) are set to mode `0111` (search-only) so directory listing like `ls /run/agent-sandbox/bin` fails. This is a deterrence measure only; mounts can still be inspected via `/proc/self/mountinfo`.
+Note: `/run/agent-sandbox` and its subdirectories (`bin`, `wrappers`, `presets`) are set to mode `0111` (search-only) so directory listing like `ls /run/agent-sandbox/bin` fails. This is a deterrence measure only; mounts can still be inspected via `/proc/self/mountinfo`.
 
 **How it works:**
 1. Discover all executable targets for each configured command by searching PATH
    (symlinks resolved and deduplicated by resolved target).
-2. For `false` (deny): create a deny policy at `/run/agent-sandbox/policies/<cmd>`
+2. For `false` (deny): create a deny wrapper at `/run/agent-sandbox/wrappers/<cmd>`
    and replace every discovered target with the launcher/shim.
 3. For script wrappers:
-   - Mount the wrapper script at `/run/agent-sandbox/policies/<cmd>`.
+   - Mount the wrapper script at `/run/agent-sandbox/wrappers/<cmd>`.
    - If the wrapper needs the real binary, also mount the real binary at
      `/run/agent-sandbox/bin/<cmd>`.
    - Replace every discovered target with the launcher/shim.
@@ -243,7 +243,7 @@ Note: `/run/agent-sandbox` and its subdirectories (`bin`, `policies`, `presets`)
   implicitly when the launcher is executed via a wrapped path like `/usr/bin/git`
   (argv0-based dispatch).
 - Dispatch order:
-  1. If `/run/agent-sandbox/policies/<cmd>` exists, execute it and set:
+  1. If `/run/agent-sandbox/wrappers/<cmd>` exists, execute it and set:
      - `AGENT_SANDBOX_CMD=<cmd>`
      - `AGENT_SANDBOX_REAL=/run/agent-sandbox/bin/<cmd>` (if present, else empty)
   2. Otherwise, if `/run/agent-sandbox/presets/<cmd>` exists, run the built-in

@@ -267,9 +267,9 @@ func newSandbox(cfg *Config, env sandbox.Environment, debug *DebugLogger) (*sand
 	)
 
 	// Nested sandbox support: the inner sandbox mounts a fresh /run tmpfs, which
-	// would otherwise hide the outer sandbox runtime (policies/real bins).
+	// would otherwise hide the outer sandbox runtime (wrappers/real bins).
 	// Mount the outer runtime under /run/agent-sandbox/outer and let the launcher
-	// fall back to it when no inner policy exists.
+	// fall back to it when no inner wrapper exists.
 	insideSandbox, err := isInsideSandbox()
 	if err != nil {
 		return nil, fmt.Errorf("checking if inside sandbox: %w", err)
@@ -514,9 +514,9 @@ func hasWrapperMarker(runtimeRoot, cmdName string) bool {
 		return false
 	}
 
-	_, policyErr := os.Stat(filepath.Join(runtimeRoot, "policies", cmdName))
+	_, wrapperErr := os.Stat(filepath.Join(runtimeRoot, "wrappers", cmdName))
 
-	return policyErr == nil
+	return wrapperErr == nil
 }
 
 func isWrappedCommandName(cmdName string) bool {
@@ -556,7 +556,7 @@ func checkNestedSandboxDepth() error {
 	}
 
 	// The launcher only searches the current runtime and one outer runtime.
-	// A third-level sandbox would skip top-level policies, so block it here.
+	// A third-level sandbox would skip top-level wrappers, so block it here.
 	outerBinary := filepath.Join(filepath.Dir(sandboxBinaryPath), "outer", "agent-sandbox")
 
 	_, err = os.Stat(outerBinary)

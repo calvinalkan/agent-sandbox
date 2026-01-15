@@ -703,13 +703,13 @@ func Test_Git_Clone_Local_Path_Works(t *testing.T) {
 }
 
 // ============================================================================
-// E2E tests for policy file immutability
+// E2E tests for wrapper file immutability
 //
-// The git preset policy file at /run/agent-sandbox/policies/git must be
+// The git preset wrapper file at /run/agent-sandbox/wrappers/git must be
 // immutable inside the sandbox to prevent agents from tampering with it.
 // ============================================================================
 
-func Test_Git_Policy_File_Cannot_Be_Deleted(t *testing.T) {
+func Test_Git_Wrapper_File_Cannot_Be_Deleted_When_Preset_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 	run := gitTestRunner(t)
@@ -718,21 +718,21 @@ func Test_Git_Policy_File_Cannot_Be_Deleted(t *testing.T) {
 	repo.WriteFile("README.md", "# Test")
 	repo.Commit("initial")
 
-	// Try to delete the git policy file
-	_, stderr, code := run("-C", repo.Dir, "rm", "-f", "/run/agent-sandbox/policies/git")
+	// Try to delete the git wrapper file
+	_, stderr, code := run("-C", repo.Dir, "rm", "-f", "/run/agent-sandbox/wrappers/git")
 
 	if code == 0 {
-		t.Error("should not be able to delete policy file, expected non-zero exit code")
+		t.Error("should not be able to delete wrapper file, expected non-zero exit code")
 	}
 
-	// Verify git still works (policy file intact)
+	// Verify git still works (wrapper file intact)
 	_, _, gitCode := run("-C", repo.Dir, "git", "status")
 	if gitCode != 0 {
 		t.Errorf("git should still work after failed rm, stderr: %s", stderr)
 	}
 }
 
-func Test_Git_Policy_File_Cannot_Be_Overwritten(t *testing.T) {
+func Test_Git_Wrapper_File_Cannot_Be_Overwritten_When_Preset_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 	run := gitTestRunner(t)
@@ -741,11 +741,11 @@ func Test_Git_Policy_File_Cannot_Be_Overwritten(t *testing.T) {
 	repo.WriteFile("README.md", "# Test")
 	repo.Commit("initial")
 
-	// Try to overwrite the git policy file
-	_, _, code := run("-C", repo.Dir, "sh", "-c", "echo 'hacked' > /run/agent-sandbox/policies/git")
+	// Try to overwrite the git wrapper file
+	_, _, code := run("-C", repo.Dir, "sh", "-c", "echo 'hacked' > /run/agent-sandbox/wrappers/git")
 
 	if code == 0 {
-		t.Error("should not be able to overwrite policy file, expected non-zero exit code")
+		t.Error("should not be able to overwrite wrapper file, expected non-zero exit code")
 	}
 
 	// Verify git still works with original preset behavior
@@ -759,7 +759,7 @@ func Test_Git_Policy_File_Cannot_Be_Overwritten(t *testing.T) {
 	}
 }
 
-func Test_Git_Policy_File_Cannot_Be_Truncated(t *testing.T) {
+func Test_Git_Wrapper_File_Cannot_Be_Truncated_When_Preset_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 	run := gitTestRunner(t)
@@ -768,11 +768,11 @@ func Test_Git_Policy_File_Cannot_Be_Truncated(t *testing.T) {
 	repo.WriteFile("README.md", "# Test")
 	repo.Commit("initial")
 
-	// Try to truncate the git policy file
-	_, _, code := run("-C", repo.Dir, "sh", "-c", "truncate -s 0 /run/agent-sandbox/policies/git")
+	// Try to truncate the git wrapper file
+	_, _, code := run("-C", repo.Dir, "sh", "-c", "truncate -s 0 /run/agent-sandbox/wrappers/git")
 
 	if code == 0 {
-		t.Error("should not be able to truncate policy file, expected non-zero exit code")
+		t.Error("should not be able to truncate wrapper file, expected non-zero exit code")
 	}
 
 	// Verify git still works

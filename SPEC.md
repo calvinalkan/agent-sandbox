@@ -344,14 +344,14 @@ When blocked, prints a guidance message to stderr and exits with error.
 
 **Temp directory exception:** If the current working directory is inside the system temp directory (for example `/tmp`), the git wrapper does not block operations. This is intended for tests and throwaway repos.
 
-**Wrapper mechanism:** All paths to the binary are discovered (e.g., `/usr/bin/git`, `/bin/git`, `/usr/local/bin/git`) and symlinks resolved. For blocking (`false`), a blocker is mounted over all locations. For presets and custom wrappers, the real binary is mounted at `/run/agent-sandbox/bin/<cmd>` and wrapper logic is driven by sandbox-internal policy files (`/run/agent-sandbox/policies/<cmd>`). Preset policies are plain files whose content starts with `preset:<name>`. Discovered target paths are then replaced with a launcher that dispatches to the right policy/preset.
+**Wrapper mechanism:** All paths to the binary are discovered (e.g., `/usr/bin/git`, `/bin/git`, `/usr/local/bin/git`) and symlinks resolved. For blocking (`false`), a blocker is mounted over all locations. For presets and custom wrappers, the real binary is mounted at `/run/agent-sandbox/bin/<cmd>` and wrapper logic is driven by sandbox-internal wrapper files (`/run/agent-sandbox/wrappers/<cmd>`). Preset wrappers are plain files whose content starts with `preset:<name>`. Discovered target paths are then replaced with a launcher that dispatches to the right wrapper/preset.
 
 **Binary/command bypass (obfuscation only):**
 - A process inside the sandbox can often discover wrapper mounts by inspecting `/proc/self/mountinfo`.
 - The "real" tool binary is mounted at `/run/agent-sandbox/bin/<cmd>` (not on PATH). If a process knows that path, it can execute the real tool directly and bypass wrapper/preset logic.
 - To reduce trivial discovery (but not eliminate it), agent-sandbox:
   - uses an ELF launcher at wrapped target paths (so `cat $(command -v git)` doesn't trivially reveal a shell shim), and
-  - makes `/run/agent-sandbox/{bin,policies}` search-only (mode `0111`) so directory listing like `ls /run/agent-sandbox/bin` fails.
+  - makes `/run/agent-sandbox/{bin,wrappers}` search-only (mode `0111`) so directory listing like `ls /run/agent-sandbox/bin` fails.
 
 These measures are deterrence only. Filesystem rules (`ro`, `rw`, `exclude`) are the enforcement boundary.
 
@@ -435,7 +435,7 @@ This is enforced by the kernel — the inner sandbox cannot escape the outer's r
 - Outer: wrapped/preset/blocked → Inner: raw ❌ (inner cannot override outer wrappers)
 - `--cmd` CLI flag: allowed inside a sandbox, but only applies to commands that are not already wrapped by the outer sandbox
 
-Note: the agent-sandbox binary may be renamed on the host. Inside the sandbox, multicall dispatch is triggered by policy/preset marker files rather than the executable name, so renamed binaries still behave like the normal CLI.
+Note: the agent-sandbox binary may be renamed on the host. Inside the sandbox, multicall dispatch is triggered by wrapper/preset marker files rather than the executable name, so renamed binaries still behave like the normal CLI.
 
 When running inside a sandbox, command rules from config files and `--cmd` are applied only for commands that are not already wrapped by the outer sandbox. This lets nested sandboxes lock down additional tools without weakening the outer sandbox policy.
 

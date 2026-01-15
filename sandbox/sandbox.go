@@ -287,7 +287,7 @@ type commands struct {
 	//
 	//   {MountPath}/
 	//   ├── bin/       # real binaries
-	//   └── policies/  # wrapper scripts
+	//   └── wrappers/  # wrapper scripts
 	//
 	// If empty, defaults to `/run/{basename(Launcher)}`.
 	//
@@ -380,7 +380,7 @@ type filesystem struct {
 // When the command is invoked, the launcher is responsible for running the
 // wrapper script.
 //
-// Wrapper scripts are mounted into the sandbox at `{MountPath}/policies/{cmd}` as
+// Wrapper scripts are mounted into the sandbox at `{MountPath}/wrappers/{cmd}` as
 // an executable file (mode 0555).
 //
 // For wrapped commands, the first PATH match is available at `{MountPath}/bin/{cmd}`.
@@ -392,7 +392,7 @@ type filesystem struct {
 //
 //	{MountPath}/
 //	├── bin/{cmd}       # real binary (first PATH match)
-//	└── policies/{cmd}  # wrapper scripts
+//	└── wrappers/{cmd}  # wrapper scripts
 //
 // Example:
 //

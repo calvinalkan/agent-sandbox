@@ -146,8 +146,8 @@ func buildCommandWrapperPlan(cmdsCfg Commands, env Environment, paths pathResolv
 		needRunDir = true
 		needWrappersDir = true
 
-		policyDst := filepath.Join(mountDir, "policies", cmdName)
-		plan.dataMounts = append(plan.dataMounts, roBindDataMount{dst: policyDst, perms: 0o555, data: denyScript})
+		wrapperDst := filepath.Join(mountDir, "wrappers", cmdName)
+		plan.dataMounts = append(plan.dataMounts, roBindDataMount{dst: wrapperDst, perms: 0o555, data: denyScript})
 
 		for _, dst := range targets {
 			plan.launcherMounts = append(plan.launcherMounts, RoBind(cmdsCfg.Launcher, dst))
@@ -214,8 +214,8 @@ func buildCommandWrapperPlan(cmdsCfg Commands, env Environment, paths pathResolv
 
 		// The user-provided wrapper script is mounted into the sandbox and then
 		// the launcher is mounted over each real binary location.
-		scriptDst := filepath.Join(mountDir, "policies", cmdName)
-		plan.dataMounts = append(plan.dataMounts, roBindDataMount{dst: scriptDst, perms: 0o555, data: contents})
+		wrapperDst := filepath.Join(mountDir, "wrappers", cmdName)
+		plan.dataMounts = append(plan.dataMounts, roBindDataMount{dst: wrapperDst, perms: 0o555, data: contents})
 
 		// Wrappers always expose the real binary.
 		realBinaryDst := filepath.Join(mountDir, "bin", cmdName)
@@ -246,7 +246,7 @@ func buildCommandWrapperPlan(cmdsCfg Commands, env Environment, paths pathResolv
 	}
 
 	if needWrappersDir {
-		plan.dirs = append(plan.dirs, Dir(filepath.Join(mountDir, "policies"), runtimeDirPerms))
+		plan.dirs = append(plan.dirs, Dir(filepath.Join(mountDir, "wrappers"), runtimeDirPerms))
 	}
 
 	return plan, nil

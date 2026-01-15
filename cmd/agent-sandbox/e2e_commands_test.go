@@ -146,7 +146,7 @@ echo OK`, agsInSandbox),
 		t.Fatalf("expected OK in stdout, got: %q", stdout)
 	}
 
-	if strings.Contains(stderr, "no policy or preset configured") {
+	if strings.Contains(stderr, "no wrapper or preset configured") {
 		t.Fatalf("unexpected multicall error in stderr: %s", stderr)
 	}
 }
@@ -166,7 +166,7 @@ exec "$AGENT_SANDBOX_REAL" "$@"
 lsbin=$(command -v ls)
 [ -x "$lsbin" ]
 
-dirs="/run/agent-sandbox /run/agent-sandbox/bin /run/agent-sandbox/policies"
+dirs="/run/agent-sandbox /run/agent-sandbox/bin /run/agent-sandbox/wrappers"
 for d in $dirs; do
   if [ ! -d "$d" ]; then
     printf 'missing dir: %s\n' "$d" >&2

@@ -12,11 +12,11 @@
 //	/run/agent-sandbox/
 //	├── agent-sandbox     # the agent-sandbox binary itself
 //	├── bin/              # real binaries (e.g., bin/git)
-//	└── policies/         # wrapper scripts or preset markers
+//	└── wrappers/         # wrapper scripts or preset markers
 //
-// # Policy Files
+// # Wrapper Files
 //
-// Each wrapped command has a policy file at policies/<cmd>. The content
+// Each wrapped command has a wrapper file at wrappers/<cmd>. The content
 // determines how the command is handled:
 //
 //   - "preset:<name>\n": Built-in preset (e.g., "preset:git\n")
@@ -30,26 +30,26 @@
 //	┌─────────────────────────────────────────────────┐
 //	│ OUTER SANDBOX                                   │
 //	│   /run/agent-sandbox/                           │
-//	│     ├── policies/git    ← outer's git policy   │
+//	│     ├── wrappers/git    ← outer's git wrapper   │
 //	│     └── bin/git                                 │
 //	│                                                 │
 //	│   ┌─────────────────────────────────────────┐   │
 //	│   │ INNER SANDBOX                           │   │
 //	│   │   /run/agent-sandbox/                   │   │
-//	│   │     ├── policies/rm  ← inner's policy   │   │
+//	│   │     ├── wrappers/rm  ← inner's wrapper  │   │
 //	│   │     └── outer/       ← mount of outer   │   │
-//	│   │           ├── policies/git              │   │
+//	│   │           ├── wrappers/git              │   │
 //	│   │           └── bin/git                   │   │
 //	│   └─────────────────────────────────────────┘   │
 //	└─────────────────────────────────────────────────┘
 //
 // The dispatcher searches inner first, then outer. Since inner sandboxes
-// cannot override outer policies (filtered by filterNestedCommandRules),
-// outer policies are effectively inherited.
+// cannot override outer wrappers (filtered by filterNestedCommandRules),
+// outer wrappers are effectively inherited.
 //
 // # Dispatch Flow
 //
-//  1. Read /run/agent-sandbox/policies/<cmd>
+//  1. Read /run/agent-sandbox/wrappers/<cmd>
 //  2. If content starts with "preset:" → run built-in preset
 //  3. Otherwise → run as script
 //  4. Repeat for /run/agent-sandbox/outer/... (nested only)
@@ -79,13 +79,13 @@ func runMulticall(ctx context.Context, cmdName string, cmdArgs []string, stdin i
 	}
 
 	for _, root := range multicallRuntimeRoots() {
-		policy := filepath.Join(root, "policies", cmdName)
+		wrapperPath := filepath.Join(root, "wrappers", cmdName)
 
-		content, err := os.ReadFile(policy)
+		content, err := os.ReadFile(wrapperPath)
 		if err == nil {
-			return runPolicyFromContent(ctx, &policyDispatchInput{
+			return runWrapperFromContent(ctx, &wrapperDispatchInput{
 				runtimeRoot: root,
-				policyPath:  policy,
+				wrapperPath: wrapperPath,
 				cmdName:     cmdName,
 				cmdArgs:     cmdArgs,
 				content:     content,
@@ -100,16 +100,16 @@ func runMulticall(ctx context.Context, cmdName string, cmdArgs []string, stdin i
 			continue
 		}
 
-		policy = filepath.Join(root, "policies", "git")
+		wrapperPath = filepath.Join(root, "wrappers", "git")
 
-		content, err = os.ReadFile(policy)
+		content, err = os.ReadFile(wrapperPath)
 		if err != nil {
 			continue
 		}
 
-		return runPolicyFromContent(ctx, &policyDispatchInput{
+		return runWrapperFromContent(ctx, &wrapperDispatchInput{
 			runtimeRoot: root,
-			policyPath:  policy,
+			wrapperPath: wrapperPath,
 			cmdName:     "git",
 			cmdArgs:     aliasArgs,
 			content:     content,
@@ -123,9 +123,9 @@ func runMulticall(ctx context.Context, cmdName string, cmdArgs []string, stdin i
 	return fmt.Errorf("%s: command not available", cmdName)
 }
 
-type policyDispatchInput struct {
+type wrapperDispatchInput struct {
 	runtimeRoot string
-	policyPath  string
+	wrapperPath string
 	cmdName     string
 	cmdArgs     []string
 	content     []byte
@@ -135,7 +135,7 @@ type policyDispatchInput struct {
 	env         map[string]string
 }
 
-func runPolicyFromContent(ctx context.Context, input *policyDispatchInput) error {
+func runWrapperFromContent(ctx context.Context, input *wrapperDispatchInput) error {
 	if strings.HasPrefix(string(input.content), "preset:") {
 		presetName := strings.TrimPrefix(strings.TrimSpace(string(input.content)), "preset:")
 		if presetName == "git" && input.cmdName == "git" {
@@ -147,7 +147,7 @@ func runPolicyFromContent(ctx context.Context, input *policyDispatchInput) error
 
 	realBinary := filepath.Join(input.runtimeRoot, "bin", input.cmdName)
 
-	// Block-only policies do not mount a real binary; allow wrapper execution
+	// Block-only wrappers do not mount a real binary; allow wrapper execution
 	// in that case by clearing AGENT_SANDBOX_REAL when the file is missing.
 	_, statErr := os.Stat(realBinary)
 	if statErr != nil {
@@ -158,15 +158,15 @@ func runPolicyFromContent(ctx context.Context, input *policyDispatchInput) error
 		realBinary = ""
 	}
 
-	return runPolicy(ctx, &policyRunInput{
-		policyPath: input.policyPath,
-		cmdName:    input.cmdName,
-		realBinary: realBinary,
-		cmdArgs:    input.cmdArgs,
-		stdin:      input.stdin,
-		stdout:     input.stdout,
-		stderr:     input.stderr,
-		env:        input.env,
+	return runWrapper(ctx, &wrapperRunInput{
+		wrapperPath: input.wrapperPath,
+		cmdName:     input.cmdName,
+		realBinary:  realBinary,
+		cmdArgs:     input.cmdArgs,
+		stdin:       input.stdin,
+		stdout:      input.stdout,
+		stderr:      input.stderr,
+		env:         input.env,
 	})
 }
 
@@ -181,19 +181,19 @@ func gitAliasSubcommand(cmdName string) string {
 	}
 }
 
-type policyRunInput struct {
-	policyPath string
-	cmdName    string
-	realBinary string
-	cmdArgs    []string
-	stdin      io.Reader
-	stdout     io.Writer
-	stderr     io.Writer
-	env        map[string]string
+type wrapperRunInput struct {
+	wrapperPath string
+	cmdName     string
+	realBinary  string
+	cmdArgs     []string
+	stdin       io.Reader
+	stdout      io.Writer
+	stderr      io.Writer
+	env         map[string]string
 }
 
-func runPolicy(ctx context.Context, config *policyRunInput) error {
-	cmd, err := newExecCmd(config.policyPath, config.cmdArgs)
+func runWrapper(ctx context.Context, config *wrapperRunInput) error {
+	cmd, err := newExecCmd(config.wrapperPath, config.cmdArgs)
 	if err != nil {
 		return fmt.Errorf("running wrapper command %s: %w", config.cmdName, err)
 	}
@@ -427,13 +427,13 @@ func isBlockedGitOperation(subcommand string, args []string) error {
 	return nil
 }
 
-// multicallRuntimeRoots returns the runtime directories to search for policies,
+// multicallRuntimeRoots returns the runtime directories to search for wrappers,
 // in priority order: inner sandbox first, then outer (if nested).
 //
 // In a nested sandbox, /run/agent-sandbox/outer contains the outer sandbox's
-// runtime. We search inner first so inner-specific policies take precedence,
+// runtime. We search inner first so inner-specific wrappers take precedence,
 // but since filterNestedCommandRules prevents inner from overriding outer
-// policies, outer policies are effectively inherited.
+// wrappers, outer wrappers are effectively inherited.
 func multicallRuntimeRoots() []string {
 	roots := []string{agentSandboxRuntimeRoot}
 
