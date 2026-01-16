@@ -1,11 +1,11 @@
-SHELL := /bin/bash
+SHELL := bash
 .SHELLFLAGS := -eu -o pipefail -c
 MAKEFLAGS += --warn-undefined-variables --no-builtin-rules -j
 .SUFFIXES:
 .DELETE_ON_ERROR:
 .DEFAULT_GOAL := build
 
-.PHONY: build test lint clean install vet install-tools check fmt modernize
+.PHONY: build link test lint clean install vet install-tools check fmt modernize nix-build nix-test
 
 BINARY := agent-sandbox
 GO := go
@@ -16,7 +16,10 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 
 build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/agent-sandbox
-	@[ -e ~/.local/bin/$(BINARY) ] || ln -sf $(CURDIR)/$(BINARY) ~/.local/bin/$(BINARY)
+
+link:
+	@mkdir -p ~/.local/bin
+	@ln -sf $(CURDIR)/$(BINARY) ~/.local/bin/$(BINARY)
 
 vet:
 	$(GO) vet ./...
@@ -38,6 +41,7 @@ test:
 
 clean:
 	rm -f $(BINARY)
+	rm -rf result
 
 install:
 	$(GO) install ./cmd/agent-sandbox
@@ -47,3 +51,10 @@ install-tools:
 	@echo "Install with: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
 
 check: vet lint test
+
+# Nix (reproducible)
+nix-build:
+	nix build --extra-experimental-features "nix-command flakes"
+
+nix-test:
+	nix build --extra-experimental-features "nix-command flakes" .#checks.x86_64-linux.default

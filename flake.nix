@@ -9,39 +9,52 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      version = "0.1.0";
     in
     {
       packages.${system}.default = pkgs.buildGoModule {
         pname = "agent-sandbox";
-        inherit version;
+        version = "0.1.0";
         src = ./.;
         vendorHash = "sha256-EJebrUlmzwSYD6EjddHiFDd2aJ2+ikrEr6qXFrQRV1U=";
 
-        nativeBuildInputs = [ pkgs.makeWrapper ];
+        nativeBuildInputs = [ pkgs.bash pkgs.gnumake pkgs.makeWrapper ];
 
-        # Tests need bwrap which can't run inside nix's sandbox
-        doCheck = false;
+        buildPhase = ''
+          make build
+        '';
 
-        ldflags = [
-          "-X main.version=${version}"
-          "-X main.commit=${self.shortRev or "dirty"}"
-          "-X main.date=1970-01-01_00:00:00"
-        ];
-
-        postInstall = ''
+        installPhase = ''
+          mkdir -p $out/bin
+          cp agent-sandbox $out/bin/
           wrapProgram $out/bin/agent-sandbox \
             --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bubblewrap ]}
         '';
 
-        meta = with pkgs.lib; {
-          description = "CLI tool that runs commands inside a filesystem sandbox using bwrap";
-          license = {
-            fullName = "Proprietary";
-            free = false;
-          };
-          platforms = [ "x86_64-linux" ];
-        };
+        doCheck = false;
+      };
+
+      checks.${system}.default = pkgs.buildGoModule {
+        pname = "agent-sandbox";
+        version = "0.1.0";
+        src = ./.;
+        vendorHash = "sha256-EJebrUlmzwSYD6EjddHiFDd2aJ2+ikrEr6qXFrQRV1U=";
+
+        nativeBuildInputs = [ pkgs.bash pkgs.gnumake pkgs.bubblewrap ];
+
+        buildPhase = ''
+          make build
+        '';
+
+        checkPhase = ''
+          make test
+        '';
+
+        installPhase = ''
+          mkdir -p $out/bin
+          cp agent-sandbox $out/bin/
+        '';
+
+        doCheck = true;
       };
     };
 }
