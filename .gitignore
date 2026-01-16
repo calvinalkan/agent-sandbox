@@ -1,5 +1,7 @@
 # Build output
 /agent-sandbox
+/result
+/vendor
 
 # Test binaries
 *.test
