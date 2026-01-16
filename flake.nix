@@ -17,7 +17,7 @@
         src = ./.;
         vendorHash = "sha256-EJebrUlmzwSYD6EjddHiFDd2aJ2+ikrEr6qXFrQRV1U=";
 
-        nativeBuildInputs = [ pkgs.bash pkgs.gnumake pkgs.makeWrapper ];
+        nativeBuildInputs = [ pkgs.bash pkgs.gnumake ];
 
         buildPhase = ''
           make build
@@ -26,11 +26,14 @@
         installPhase = ''
           mkdir -p $out/bin
           cp agent-sandbox $out/bin/
-          wrapProgram $out/bin/agent-sandbox \
-            --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bubblewrap ]}
         '';
 
         doCheck = false;
+
+        meta = {
+          description = "CLI tool that runs commands inside a filesystem sandbox using bwrap";
+          platforms = [ "x86_64-linux" ];
+        };
       };
 
       checks.${system}.default = pkgs.buildGoModule {
