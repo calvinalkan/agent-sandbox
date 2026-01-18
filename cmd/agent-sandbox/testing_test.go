@@ -510,7 +510,7 @@ func testdataTempDir(t *testing.T) string {
 	}
 
 	tempDir := t.TempDir()
-	dir := filepath.Join(baseRoot, filepath.Base(tempDir))
+	dir := filepath.Join(baseRoot, strings.ReplaceAll(t.Name(), "/", "_")+"_"+filepath.Base(tempDir))
 
 	err = os.Mkdir(dir, 0o750)
 	if err != nil {
