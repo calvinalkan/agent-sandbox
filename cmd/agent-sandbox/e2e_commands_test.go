@@ -56,7 +56,7 @@ func runBinaryAtPathWithEnv(t *testing.T, binary string, env map[string]string, 
 // Block and Raw rules
 // ============================================================================
 
-func Test_Command_Block_Rule_Blocks_Command(t *testing.T) {
+func Test_Command_Blocks_Execution_When_Block_Rule_Applied(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -73,7 +73,7 @@ func Test_Command_Block_Rule_Blocks_Command(t *testing.T) {
 	}
 }
 
-func Test_Command_Launcher_Uses_ELF_For_Target_Paths(t *testing.T) {
+func Test_Command_Launcher_Uses_ELF_When_Target_Path_Resolved(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -113,7 +113,7 @@ od -An -t x1 -N 4 "$p" | tr -d $' \n'`)
 	}
 }
 
-func Test_Renamed_Binary_Works_As_CLI_Inside_Sandbox(t *testing.T) {
+func Test_Renamed_Binary_Works_As_CLI_When_Inside_Sandbox(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -151,7 +151,7 @@ echo OK`, agsInSandbox),
 	}
 }
 
-func Test_Command_Runtime_Dirs_Not_Listable(t *testing.T) {
+func Test_Command_Runtime_Dirs_Not_Listable_When_Accessed(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -201,7 +201,7 @@ done
 	}
 }
 
-func Test_Command_Raw_Rule_Allows_Command(t *testing.T) {
+func Test_Command_Allows_Execution_When_Raw_Rule_Applied(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -243,7 +243,7 @@ func setupGitRepoForCommandTests(t *testing.T) (map[string]string, string) {
 	return env, workDir
 }
 
-func Test_Git_Preset_Blocks_Checkout(t *testing.T) {
+func Test_Git_Preset_Blocks_Checkout_When_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -260,7 +260,7 @@ func Test_Git_Preset_Blocks_Checkout(t *testing.T) {
 	}
 }
 
-func Test_Git_Preset_Blocks_Reset_Hard(t *testing.T) {
+func Test_Git_Preset_Blocks_Reset_Hard_When_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -277,7 +277,7 @@ func Test_Git_Preset_Blocks_Reset_Hard(t *testing.T) {
 	}
 }
 
-func Test_Git_Preset_Allows_Status(t *testing.T) {
+func Test_Git_Preset_Allows_Status_When_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -294,7 +294,7 @@ func Test_Git_Preset_Allows_Status(t *testing.T) {
 	}
 }
 
-func Test_Git_Preset_Allows_Log(t *testing.T) {
+func Test_Git_Preset_Allows_Log_When_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -311,7 +311,7 @@ func Test_Git_Preset_Allows_Log(t *testing.T) {
 	}
 }
 
-func Test_Git_Preset_Allows_Commit(t *testing.T) {
+func Test_Git_Preset_Allows_Commit_When_Enabled(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -341,7 +341,7 @@ func Test_Git_Preset_Allows_Commit(t *testing.T) {
 // - AGENT_SANDBOX_CMD contains the wrapped command name (e.g. echo)
 // ============================================================================
 
-func Test_Custom_Script_Receives_Real_Binary_Path(t *testing.T) {
+func Test_Custom_Script_Receives_Real_Binary_Path_When_Invoked(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -366,7 +366,7 @@ echo "REAL_BINARY=$AGENT_SANDBOX_REAL"
 	}
 }
 
-func Test_Custom_Script_Receives_Command_Arguments(t *testing.T) {
+func Test_Custom_Script_Receives_Command_Arguments_When_Invoked(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -394,7 +394,7 @@ echo "ARGS: $@"
 	}
 }
 
-func Test_Custom_Script_Can_Call_Real_Binary(t *testing.T) {
+func Test_Custom_Script_Calls_Real_Binary_When_Using_Env_Var(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -414,7 +414,7 @@ exec "$AGENT_SANDBOX_REAL" wrapped: "$@"
 	}
 }
 
-func Test_Custom_Script_Exit_Code_Is_Preserved(t *testing.T) {
+func Test_Custom_Script_Preserves_Exit_Code_When_Script_Exits(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -430,7 +430,7 @@ exit 42
 	}
 }
 
-func Test_Custom_Script_Can_Block_Command(t *testing.T) {
+func Test_Custom_Script_Blocks_Command_When_Returning_Error(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -455,7 +455,7 @@ exit 1
 	}
 }
 
-func Test_Custom_Script_Overrides_Preset(t *testing.T) {
+func Test_Custom_Script_Overrides_Preset_When_Configured(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -483,7 +483,7 @@ exec "$AGENT_SANDBOX_REAL" "$@"
 	}
 }
 
-func Test_Custom_Script_With_Filtering_Logic(t *testing.T) {
+func Test_Custom_Script_Filters_Args_When_Logic_Applied(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 
@@ -535,5 +535,136 @@ func writeRenamedBinary(t *testing.T, src, dst string) {
 	err = os.WriteFile(dst, data, 0o755)
 	if err != nil {
 		t.Fatalf("write temp binary: %v", err)
+	}
+}
+
+// ============================================================================
+// Symlink resolution tests
+//
+// When wrapping a command that is a symlink (e.g., bunx -> bun), the launcher
+// is mounted over the resolved target. The multicall dispatcher must recognize
+// invocations by both the symlink name AND the target name.
+// ============================================================================
+
+func Test_Wrapper_Dispatches_To_Script_When_Invoked_By_Symlink_Target_Name(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	c := NewCLITester(t)
+
+	// Create a bin directory inside the test dir with a "real" binary and a symlink.
+	// This simulates bunx -> bun where bunx is a symlink.
+	binDir := filepath.Join(c.Dir, "bin")
+
+	err := os.MkdirAll(binDir, 0o755)
+	if err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+
+	// Use /bin/echo as our "real" binary (copy it so we control the setup)
+	realBinary := filepath.Join(binDir, "real-echo")
+
+	data, err := os.ReadFile("/bin/echo")
+	if err != nil {
+		t.Fatalf("read /bin/echo: %v", err)
+	}
+
+	err = os.WriteFile(realBinary, data, 0o755)
+	if err != nil {
+		t.Fatalf("write real-echo: %v", err)
+	}
+
+	// Create symlink: echo-alias -> real-echo (relative symlink)
+	symlinkPath := filepath.Join(binDir, "echo-alias")
+
+	err = os.Symlink("real-echo", symlinkPath)
+	if err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	c.WriteExecutable("wrapper.sh", `#!/bin/sh
+echo "WRAPPED:$AGENT_SANDBOX_CMD:$@"
+`)
+	wrapperPath := filepath.Join(c.Dir, "wrapper.sh")
+
+	// Wrap the symlink name "echo-alias"
+	env := map[string]string{
+		"HOME":   c.Env["HOME"],
+		"TMPDIR": c.Env["TMPDIR"],
+		"PATH":   binDir + ":" + systemPath(),
+	}
+
+	// Invoke by symlink name - should go through wrapper
+	stdout, stderr, code := RunBinaryWithEnv(t, env, "-C", c.Dir, "--cmd", "echo-alias="+wrapperPath, "echo-alias", "via-symlink")
+	if code != 0 {
+		t.Errorf("expected exit 0 for symlink invocation, got %d\nstderr: %s", code, stderr)
+	}
+
+	if !strings.Contains(stdout, "WRAPPED:echo-alias:via-symlink") {
+		t.Errorf("expected wrapper output for symlink, got: %s", stdout)
+	}
+
+	// Invoke by target name "real-echo" - should ALSO go through wrapper
+	// This is the bug case: before the fix, this would try to execute "real-echo"
+	// as a normal command because only "echo-alias" had a wrapper marker.
+	stdout, stderr, code = RunBinaryWithEnv(t, env, "-C", c.Dir, "--cmd", "echo-alias="+wrapperPath, "real-echo", "via-target")
+	if code != 0 {
+		t.Errorf("expected exit 0 for target invocation, got %d\nstderr: %s", code, stderr)
+	}
+
+	if !strings.Contains(stdout, "WRAPPED:real-echo:via-target") {
+		t.Errorf("expected wrapper output for target name, got: %s", stdout)
+	}
+}
+
+func Test_Wrapper_Blocks_Command_When_Invoked_By_Symlink_Target_Name(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+
+	c := NewCLITester(t)
+
+	// Create a bin directory inside the test dir
+	binDir := filepath.Join(c.Dir, "bin")
+
+	err := os.MkdirAll(binDir, 0o755)
+	if err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+
+	realBinary := filepath.Join(binDir, "real-cat")
+
+	data, err := os.ReadFile("/bin/cat")
+	if err != nil {
+		t.Fatalf("read /bin/cat: %v", err)
+	}
+
+	err = os.WriteFile(realBinary, data, 0o755)
+	if err != nil {
+		t.Fatalf("write real-cat: %v", err)
+	}
+
+	// Create symlink: cat-alias -> real-cat (relative symlink)
+	symlinkPath := filepath.Join(binDir, "cat-alias")
+
+	err = os.Symlink("real-cat", symlinkPath)
+	if err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	env := map[string]string{
+		"HOME":   c.Env["HOME"],
+		"TMPDIR": c.Env["TMPDIR"],
+		"PATH":   binDir + ":" + systemPath(),
+	}
+
+	// Block the symlink name "cat-alias"
+	// Invoke by target name "real-cat" - should ALSO be blocked
+	_, stderr, code := RunBinaryWithEnv(t, env, "-C", c.Dir, "--cmd", "cat-alias=false", "real-cat", "/etc/hostname")
+	if code == 0 {
+		t.Error("expected non-zero exit for blocked target invocation")
+	}
+
+	if !strings.Contains(stderr, "blocked") {
+		t.Errorf("expected blocked message for target name, got: %s", stderr)
 	}
 }
