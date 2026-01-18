@@ -24,6 +24,7 @@ linters:
   #                     # callers should never errors.Is() check
   # - max-control-nesting # stylistic: arbitrary nesting limit
   # - max-public-structs  # arbitrary limit on public structs per package
+  # - varnamelen        # styling: LLMs like short vars
 
   # ============================================================================
   # Enabled linters
@@ -120,7 +121,6 @@ linters:
     - unused
     - usestdlibvars
     - usetesting
-    - varnamelen
     - wastedassign
     - whitespace
     - wrapcheck
@@ -200,10 +200,6 @@ linters:
 
     nakedret:
       max-func-lines: 0
-    varnamelen:
-      min-name-length: 2
-      ignore-names:
-        - i
     gocritic:
       enable-all: true
       disabled-checks:
@@ -270,7 +266,6 @@ linters:
       - path: _test\.go
         linters:
           - dupl
-          - varnamelen
           - noctx
           - errcheck # allow _ = err in tests
           - gosec # G104 duplicates errcheck
