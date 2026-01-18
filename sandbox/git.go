@@ -35,7 +35,13 @@ func gitPresetRules(workDir string, strict bool) ([]Mount, error) {
 	}
 
 	if mainRepo != "" {
+		// When in a worktree, the worktree's git directory (gitDir) lives inside
+		// the main repo at .git/worktrees/<name>. Git needs write access to this
+		// directory for lock files (index.lock, etc.). Since @base may make the
+		// main repo's parent directory read-only, we must explicitly grant RW
+		// access to the worktree's git directory.
 		mounts = append(mounts,
+			RW(gitDir),
 			ROTry(filepath.Join(mainRepo, ".git", "hooks")),
 			ROTry(filepath.Join(mainRepo, ".git", "config")),
 		)

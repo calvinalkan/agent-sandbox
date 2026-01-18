@@ -1466,7 +1466,7 @@ func Test_Sandbox_DirectMounts_Appear_When_Configured(t *testing.T) {
 	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/mnt/dir"})
 }
 
-func Test_Sandbox_DirectMounts_DirPerms_Emits_Chmod(t *testing.T) {
+func Test_Sandbox_DirectMounts_Emits_Chmod_When_DirPerms_Configured(t *testing.T) {
 	t.Parallel()
 
 	env := newTestEnv(t, testEnvConfig{
@@ -3060,6 +3060,9 @@ func Test_Sandbox_Presets_Protects_MainRepo_When_Worktree(t *testing.T) {
 	mustContainSubsequence(t, args, []string{"--ro-bind-try", filepath.Join(gitDir, "config"), filepath.Join(gitDir, "config")})
 	mustContainSubsequence(t, args, []string{"--ro-bind-try", filepath.Join(mainGit, "hooks"), filepath.Join(mainGit, "hooks")})
 	mustContainSubsequence(t, args, []string{"--ro-bind-try", filepath.Join(mainGit, "config"), filepath.Join(mainGit, "config")})
+
+	// Worktree's git directory must be mounted RW so git can create lock files (index.lock, etc.)
+	mustContainSubsequence(t, args, []string{"--bind", gitDir, gitDir})
 }
 
 func Test_Sandbox_Presets_GitStrict_Protects_Refs_When_Configured(t *testing.T) {
