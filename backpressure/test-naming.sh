@@ -130,9 +130,10 @@ fi
 
 # Filter to only INVALID test names (those not matching the valid pattern)
 # rg -v returns 1 when all lines match (meaning no invalid names) - that's valid
+# Exclude TestMain - it's Go's special test entry point and cannot be renamed
 FOUND=""
 if [ -n "$ALL_TESTS" ]; then
-    FOUND=$(echo "$ALL_TESTS" | rg -v "$VALID_PATTERN") || true
+    FOUND=$(echo "$ALL_TESTS" | grep -v 'func TestMain(' | rg -v "$VALID_PATTERN") || true
 fi
 
 if [ -n "$FOUND" ]; then
