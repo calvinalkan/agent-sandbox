@@ -183,6 +183,7 @@ func lintTSMounts(workDir string) []Mount {
 		".eslintrc.json",
 		"eslint.config.js",
 		"eslint.config.mjs",
+		".oxlintrc.json",
 		".prettierrc",
 		".prettierrc.json",
 		"prettier.config.js",
