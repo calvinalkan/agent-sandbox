@@ -149,8 +149,23 @@ func buildCommandWrapperPlan(cmdsCfg Commands, env Environment, paths pathResolv
 		wrapperDst := filepath.Join(mountDir, "wrappers", cmdName)
 		plan.dataMounts = append(plan.dataMounts, roBindDataMount{dst: wrapperDst, perms: 0o555, data: denyScript})
 
+		// Track target basenames that differ from cmdName (e.g., bunx -> bun).
+		// We need wrapper markers for these too, so the multicall dispatcher
+		// recognizes invocations by the target name.
+		seenTargetNames := make(map[string]bool)
+		seenTargetNames[cmdName] = true
+
 		for _, dst := range targets {
 			plan.launcherMounts = append(plan.launcherMounts, RoBind(cmdsCfg.Launcher, dst))
+
+			// If the resolved target has a different basename, create an alias
+			// wrapper marker so the multicall dispatcher blocks it too.
+			targetName := filepath.Base(dst)
+			if !seenTargetNames[targetName] {
+				seenTargetNames[targetName] = true
+				aliasWrapperDst := filepath.Join(mountDir, "wrappers", targetName)
+				plan.dataMounts = append(plan.dataMounts, roBindDataMount{dst: aliasWrapperDst, perms: 0o555, data: denyScript})
+			}
 		}
 	}
 
@@ -222,8 +237,28 @@ func buildCommandWrapperPlan(cmdsCfg Commands, env Environment, paths pathResolv
 		// Use the first PATH match as the canonical "real" binary.
 		plan.realBinaryMounts = append(plan.realBinaryMounts, RoBind(targets[0], realBinaryDst))
 
+		// Track target basenames that differ from cmdName (e.g., bunx -> bun).
+		// We need wrapper markers for these too, so the multicall dispatcher
+		// recognizes invocations by the target name.
+		seenTargetNames := make(map[string]bool)
+		seenTargetNames[cmdName] = true
+
 		for _, dst := range targets {
 			plan.launcherMounts = append(plan.launcherMounts, RoBind(cmdsCfg.Launcher, dst))
+
+			// If the resolved target has a different basename (e.g., bunx symlink
+			// resolves to bun), create an alias wrapper marker so the multicall
+			// dispatcher recognizes invocations as "bun" too.
+			targetName := filepath.Base(dst)
+			if !seenTargetNames[targetName] {
+				seenTargetNames[targetName] = true
+				aliasWrapperDst := filepath.Join(mountDir, "wrappers", targetName)
+				plan.dataMounts = append(plan.dataMounts, roBindDataMount{dst: aliasWrapperDst, perms: 0o555, data: contents})
+
+				// Also expose the real binary under the alias name.
+				aliasRealDst := filepath.Join(mountDir, "bin", targetName)
+				plan.realBinaryMounts = append(plan.realBinaryMounts, RoBind(targets[0], aliasRealDst))
+			}
 		}
 	}
 

@@ -628,13 +628,16 @@ func Test_Sandbox_CommandWrappers_Resolves_Targets_When_Path_Uses_Relative_Symli
 		t.Cleanup(func() { _ = cleanup() })
 	}
 
-	if got := len(cmd.ExtraFiles); got != 1 {
-		t.Fatalf("expected 1 ExtraFile, got %d", got)
+	// 2 ExtraFiles: one for "mybin" wrapper, one for "realbin" alias wrapper
+	// (since symlink target basename differs from command name)
+	if got := len(cmd.ExtraFiles); got != 2 {
+		t.Fatalf("expected 2 ExtraFiles, got %d", got)
 	}
 
-	// Launcher at real target, wrapper at runtime path
+	// Launcher at real target, wrappers at runtime path for both names
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", realPath})
 	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/wrappers/realbin"})
 
 	if slices.Contains(cmd.Args, link) {
 		t.Fatalf("did not expect wrapper mount to symlink path %q; args: %v", link, cmd.Args)
@@ -936,15 +939,17 @@ func Test_Sandbox_CommandWrappers_Wraps_All_Targets_When_Path_Has_Mixed_Symlinks
 		t.Cleanup(func() { _ = cleanup() })
 	}
 
-	// 1 ExtraFile: shared wrapper for mybin command
-	if got := len(cmd.ExtraFiles); got != 1 {
-		t.Fatalf("expected 1 ExtraFile, got %d", got)
+	// 2 ExtraFiles: wrapper for "mybin" and alias wrapper for "realbin"
+	// (since one target resolves to a different basename via symlink)
+	if got := len(cmd.ExtraFiles); got != 2 {
+		t.Fatalf("expected 2 ExtraFiles, got %d", got)
 	}
 
-	// Launcher at both target paths, single wrapper at runtime path
+	// Launcher at both target paths, wrappers for both names
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", primary})
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin/true", alternateTarget})
 	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD), "/run/agent-sandbox/wrappers/mybin"})
+	mustContainSubsequence(t, cmd.Args, []string{"--perms", "0555", "--ro-bind-data", strconv.Itoa(firstExtraFileFD + 1), "/run/agent-sandbox/wrappers/realbin"})
 
 	if slices.Contains(cmd.Args, symlinkPath) {
 		t.Fatalf("did not expect wrapper mount to symlink path %q; args: %v", symlinkPath, cmd.Args)
