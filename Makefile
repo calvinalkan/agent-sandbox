@@ -32,9 +32,8 @@ modernize:
 	modernize -fix ./...
 
 lint:
-	golangci-lint config verify
 	@for script in ./backpressure/*.sh; do "$$script"; done
-	golangci-lint run --fix ./...
+	@golangci-lint run --fix --output.json.path stdout --show-stats=false ./... 2>/dev/null | ./.pi/golangci-format.sh
 
 test:
 	$(GO) test -race ./...
