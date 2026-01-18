@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -436,6 +437,7 @@ func fileExists(path string) (bool, error) {
 
 // parseConfigFile loads and parses a JSON/JSONC config file.
 // Both .json and .jsonc files support comments via hujson.
+// Returns an error if the config contains unknown fields.
 func parseConfigFile(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -450,7 +452,10 @@ func parseConfigFile(path string) (Config, error) {
 
 	var cfg Config
 
-	err = json.Unmarshal(standardized, &cfg)
+	decoder := json.NewDecoder(bytes.NewReader(standardized))
+	decoder.DisallowUnknownFields()
+
+	err = decoder.Decode(&cfg)
 	if err != nil {
 		return Config{}, fmt.Errorf("parsing config %s: %w", path, err)
 	}

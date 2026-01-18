@@ -502,6 +502,50 @@ func Test_LoadConfig_Error_Message_Includes_File_Path(t *testing.T) {
 	}).run(t)
 }
 
+func Test_LoadConfig_Returns_Error_When_Top_Level_Field_Is_Unknown(t *testing.T) {
+	t.Parallel()
+
+	(&configTestCase{
+		files: map[string]string{
+			".agent-sandbox.json": `{"readonly": ["Makefile"]}`,
+		},
+		wantErr: `unknown field "readonly"`,
+	}).run(t)
+}
+
+func Test_LoadConfig_Returns_Error_When_Global_Config_Has_Unknown_Field(t *testing.T) {
+	t.Parallel()
+
+	(&configTestCase{
+		globalFiles: map[string]string{
+			"agent-sandbox/config.json": `{"unknown_option": true}`,
+		},
+		wantErr: `unknown field "unknown_option"`,
+	}).run(t)
+}
+
+func Test_LoadConfig_Returns_Error_When_Filesystem_Has_Unknown_Nested_Field(t *testing.T) {
+	t.Parallel()
+
+	(&configTestCase{
+		files: map[string]string{
+			".agent-sandbox.json": `{"filesystem": {"readonly": ["Makefile"]}}`,
+		},
+		wantErr: `unknown field "readonly"`,
+	}).run(t)
+}
+
+func Test_LoadConfig_Returns_Error_When_Field_Name_Is_Misspelled(t *testing.T) {
+	t.Parallel()
+
+	(&configTestCase{
+		files: map[string]string{
+			".agent-sandbox.json": `{"netwrok": true}`,
+		},
+		wantErr: `unknown field "netwrok"`,
+	}).run(t)
+}
+
 // =============================================================================
 // Metadata Tracking (path-dependent, tested separately)
 // =============================================================================
