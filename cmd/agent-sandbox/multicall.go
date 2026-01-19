@@ -486,6 +486,12 @@ func hasFlag(args []string, flags ...string) bool {
 		}
 
 		if strings.HasPrefix(arg, "-") && len(arg) > 1 {
+			// Skip "- ..." (dash followed by space) - these are values like bullet points,
+			// not flags. E.g., commit message "- add option-fuzzing..." is not -a -d -d...
+			if len(arg) > 1 && arg[1] == ' ' {
+				continue
+			}
+
 			if len(arg) == 2 {
 				if shortFlags[arg] {
 					return true

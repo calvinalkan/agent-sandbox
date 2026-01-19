@@ -540,9 +540,9 @@ func Test_LoadConfig_Returns_Error_When_Field_Name_Is_Misspelled(t *testing.T) {
 
 	(&configTestCase{
 		files: map[string]string{
-			".agent-sandbox.json": `{"netwrok": true}`,
+			".agent-sandbox.json": `{"netwerk": true}`,
 		},
-		wantErr: `unknown field "netwrok"`,
+		wantErr: `unknown field "netwerk"`,
 	}).run(t)
 }
 

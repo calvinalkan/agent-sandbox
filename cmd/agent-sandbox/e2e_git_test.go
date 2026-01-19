@@ -596,7 +596,7 @@ func Test_Git_Branch_Delete_Succeeds_When_Git_Strict_Disabled(t *testing.T) {
 	}
 }
 
-func Test_Git_Worktree_Protects_Main_Repo_Hooks(t *testing.T) {
+func Test_Git_Worktree_Blocks_Hook_Write_When_Accessed_From_Worktree(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 	run := gitTestRunner(t)
@@ -631,7 +631,7 @@ func Test_Git_Worktree_Protects_Main_Repo_Hooks(t *testing.T) {
 	}
 }
 
-func Test_Git_Worktree_Protects_Main_Repo_Config(t *testing.T) {
+func Test_Git_Worktree_Blocks_Config_Write_When_Accessed_From_Worktree(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 	run := gitTestRunner(t)
@@ -670,7 +670,7 @@ func Test_Git_Worktree_Protects_Main_Repo_Config(t *testing.T) {
 // Git checks argv[0] to determine behavior, so the wrapper must preserve it.
 // ============================================================================
 
-func Test_Git_Clone_Local_Path_Works(t *testing.T) {
+func Test_Git_Clone_Succeeds_When_Using_Local_Path(t *testing.T) {
 	t.Parallel()
 	RequireWrapperMounting(t)
 	run := gitTestRunner(t)
@@ -779,6 +779,35 @@ func Test_Git_Wrapper_File_Cannot_Be_Truncated_When_Preset_Enabled(t *testing.T)
 	_, _, gitCode := run("-C", repo.Dir, "git", "status")
 	if gitCode != 0 {
 		t.Error("git should still work after failed truncate")
+	}
+}
+
+func Test_Git_Commit_Succeeds_When_Message_Starts_With_Dash_Space(t *testing.T) {
+	t.Parallel()
+	RequireWrapperMounting(t)
+	run := gitTestRunner(t)
+
+	repo := NewGitRepo(t)
+	repo.WriteFile("README.md", "# Test")
+	repo.Commit("initial")
+
+	// Stage a change
+	repo.WriteFile("file.txt", "content")
+	repo.run("add", "file.txt")
+
+	// Commit with a message that starts with "- " (bullet point) and contains 'n'
+	// This was being misdetected as -n (--no-verify) because hasFlag iterated
+	// through characters in "- add option-fuzzing..." and found 'n'
+	_, stderr, code := run("-C", repo.Dir, "git", "commit",
+		"-m", "test commit",
+		"-m", "- add option-fuzzing variants for behavior")
+
+	if code != 0 {
+		t.Errorf("commit with bullet-point message should succeed, got code %d\nstderr: %s", code, stderr)
+	}
+
+	if strings.Contains(stderr, "no-verify") {
+		t.Errorf("bullet-point message should not be treated as --no-verify flag\nstderr: %s", stderr)
 	}
 }
 

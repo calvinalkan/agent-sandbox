@@ -53,6 +53,36 @@ func Test_HasFlag_Handles_Equals_Form_When_Value_Is_Assigned(t *testing.T) {
 	}
 }
 
+func Test_HasFlag_Skips_Dash_Space_Prefix_When_Arg_Looks_Like_Bullet_Point(t *testing.T) {
+	t.Parallel()
+
+	// Regression: commit message "- add option-fuzzing..." was being detected as -n
+	// because hasFlag iterated through characters and found 'n' in "option"
+	args := []string{"-m", "test", "-m", "- add option-fuzzing variants"}
+	if hasFlag(args, "-n", "--no-verify") {
+		t.Error("hasFlag should not treat '- add option-fuzzing...' as containing -n flag")
+	}
+}
+
+func Test_HasFlag_Detects_Standalone_Short_Flag_When_Present(t *testing.T) {
+	t.Parallel()
+
+	args := []string{"-m", "test", "-n"}
+	if !hasFlag(args, "-n", "--no-verify") {
+		t.Error("hasFlag should detect standalone -n flag")
+	}
+}
+
+func Test_HasFlag_Detects_Combined_Short_Flags_When_Bundled(t *testing.T) {
+	t.Parallel()
+
+	// git clean -fd should detect -f
+	args := []string{"-fd"}
+	if !hasFlag(args, "-f", "--force") {
+		t.Error("hasFlag should detect -f in combined -fd")
+	}
+}
+
 func Test_IsGitOperationBlocked_Blocks_Reset_Hard_When_Hard_Reset_Is_Requested(t *testing.T) {
 	t.Parallel()
 
