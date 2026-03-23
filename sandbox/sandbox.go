@@ -188,6 +188,7 @@ func DefaultEnvironment() (Environment, error) {
 //   - Network defaults to enabled
 //   - Docker defaults to disabled
 //   - BaseFS defaults to BaseFSHost
+//   - Process preserves bubblewrap's default credentials/capabilities
 //   - Filesystem.Presets defaults to "@all"
 //
 // Some errors depend on the host filesystem (for example, missing mount targets,
@@ -212,6 +213,11 @@ type Config struct {
 	// "/" read-only. BaseFSEmpty mounts a fresh tmpfs at "/".
 	BaseFS BaseFS
 
+	// Process controls the sandboxed process credentials and capabilities.
+	//
+	// The zero value preserves bubblewrap's default behavior.
+	Process Process
+
 	// Filesystem configures filesystem policy mounts and low-level mounts.
 	Filesystem Filesystem
 
@@ -230,6 +236,46 @@ type Config struct {
 	// Debugf receives debug messages from sandbox preparation and command construction.
 	Debugf Debugf
 }
+
+// Process controls the sandboxed process credentials and capabilities.
+//
+// These settings are translated directly into bubblewrap process flags.
+// The sandbox package validates only syntax and basic invariants; the kernel
+// and bubblewrap still enforce whether a specific combination is permitted at
+// runtime.
+type Process struct {
+	// UID sets the uid inside the sandbox (bwrap: --uid).
+	UID *uint32
+
+	// GID sets the gid inside the sandbox (bwrap: --gid).
+	GID *uint32
+
+	// AddCaps adds Linux capabilities to the sandboxed process
+	// (bwrap: --cap-add).
+	//
+	// Capability names must use canonical uppercase spellings such as
+	// "CAP_SYS_CHROOT" or "ALL".
+	AddCaps []Capability
+
+	// DropCaps drops Linux capabilities from the sandboxed process
+	// (bwrap: --cap-drop).
+	//
+	// Capability names must use canonical uppercase spellings such as
+	// "CAP_SYS_CHROOT" or "ALL".
+	DropCaps []Capability
+}
+
+// Capability is a Linux capability name understood by bubblewrap, for example
+// "CAP_SYS_CHROOT".
+//
+// The SDK requires canonical uppercase spellings.
+type Capability string
+
+const (
+	// CapabilitySysChroot allows chroot(2) inside the sandbox when combined with
+	// appropriate process credentials.
+	CapabilitySysChroot Capability = "CAP_SYS_CHROOT"
+)
 
 // Commands configures command wrapper behavior.
 //
@@ -617,6 +663,18 @@ func cloneConfig(cfg *Config) Config {
 	}
 
 	out.BaseFS = cfg.BaseFS
+	if cfg.Process.UID != nil {
+		v := *cfg.Process.UID
+		out.Process.UID = &v
+	}
+
+	if cfg.Process.GID != nil {
+		v := *cfg.Process.GID
+		out.Process.GID = &v
+	}
+
+	out.Process.AddCaps = slices.Clone(cfg.Process.AddCaps)
+	out.Process.DropCaps = slices.Clone(cfg.Process.DropCaps)
 	out.Filesystem.Presets = slices.Clone(cfg.Filesystem.Presets)
 	out.Filesystem.Mounts = slices.Clone(cfg.Filesystem.Mounts)
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // validateConfigAndEnv validates user-controlled configuration and environment.
@@ -22,6 +23,7 @@ func validateConfigAndEnv(cfg *Config, env Environment) error {
 
 	errs = append(errs, validateEnvironment(env)...)
 	errs = append(errs, validateBaseFS(cfg.BaseFS)...)
+	errs = append(errs, validateProcess(cfg.Process)...)
 	errs = append(errs, validatePresetNames(cfg.Filesystem.Presets)...)
 	errs = append(errs, validateMounts(cfg.Filesystem.Mounts)...)
 	errs = append(errs, validateCommandsConfig(cfg.Commands)...)
@@ -60,6 +62,80 @@ func validateBaseFS(mode BaseFS) []error {
 	default:
 		return []error{fmt.Errorf("unknown root mode %q", mode)}
 	}
+}
+
+func validateProcess(process Process) []error {
+	var errs []error
+
+	added := make(map[Capability]struct{}, len(process.AddCaps))
+	dropped := make(map[Capability]struct{}, len(process.DropCaps))
+
+	for i, capability := range process.AddCaps {
+		errs = append(errs, validateCapability(capability, "AddCaps", i)...)
+		if _, exists := added[capability]; exists {
+			errs = append(errs, fmt.Errorf("process AddCaps[%d] %q is duplicated", i, capability))
+		}
+
+		added[capability] = struct{}{}
+	}
+
+	for i, capability := range process.DropCaps {
+		errs = append(errs, validateCapability(capability, "DropCaps", i)...)
+		if _, exists := dropped[capability]; exists {
+			errs = append(errs, fmt.Errorf("process DropCaps[%d] %q is duplicated", i, capability))
+		}
+
+		if _, exists := added[capability]; exists {
+			errs = append(errs, fmt.Errorf("process capability %q cannot appear in both AddCaps and DropCaps", capability))
+		}
+
+		dropped[capability] = struct{}{}
+	}
+
+	return errs
+}
+
+func validateCapability(capability Capability, field string, index int) []error {
+	raw := string(capability)
+
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return []error{fmt.Errorf("process %s[%d] is empty", field, index)}
+	}
+
+	if raw != trimmed {
+		return []error{fmt.Errorf("process %s[%d] %q must not contain leading or trailing whitespace", field, index, raw)}
+	}
+
+	for _, r := range raw {
+		if unicode.IsSpace(r) {
+			return []error{fmt.Errorf("process %s[%d] %q must not contain whitespace", field, index, raw)}
+		}
+	}
+
+	// The SDK intentionally requires canonical uppercase capability spellings
+	// to keep validation simple and deterministic.
+	if raw == "ALL" {
+		return nil
+	}
+
+	if !strings.HasPrefix(raw, "CAP_") {
+		return []error{fmt.Errorf("process %s[%d] %q must start with CAP_", field, index, raw)}
+	}
+
+	if len(raw) == len("CAP_") {
+		return []error{fmt.Errorf("process %s[%d] %q must include a capability name after CAP_", field, index, raw)}
+	}
+
+	for _, r := range raw[4:] {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+
+		return []error{fmt.Errorf("process %s[%d] %q contains invalid character %q", field, index, raw, r)}
+	}
+
+	return nil
 }
 
 func validatePresetNames(presets []string) []error {

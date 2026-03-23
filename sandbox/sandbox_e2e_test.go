@@ -25,6 +25,42 @@ const (
 echo WRAPPER:$@
 exec "$AGENT_SANDBOX_REAL" "$@"
 `
+
+	chrootHelperSource = `package main
+
+import (
+	"fmt"
+	"os"
+	"syscall"
+)
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
+func report(path string) {
+	data, err := os.ReadFile(path)
+	must(err)
+	fmt.Printf("%s=%q\n", path, string(data))
+}
+
+func main() {
+	must(os.Chdir("/run/round"))
+	must(syscall.Chroot("."))
+	must(os.Chdir("/"))
+
+	cwd, err := os.Getwd()
+	must(err)
+
+	fmt.Printf("cwd=%s\n", cwd)
+	report("/x")
+	report("dot/../x")
+	report("abs/x")
+	report("./dot/../x")
+}
+`
 )
 
 func Test_SandboxE2E_Blocks_Command_When_DenyWrapper_Configured(t *testing.T) {
@@ -83,6 +119,63 @@ func Test_SandboxE2E_Runs_Wrapper_When_ScriptCommandData_Configured(t *testing.T
 	// The actual wrapper functionality is tested via CLI E2E tests with the real binary.
 	res := runSandboxed(t, s, []string{"tool", "alpha", "beta"}, nil)
 	_ = res
+}
+
+func Test_SandboxE2E_Allows_Chroot_When_Process_UID_GID_And_CAP_SYS_CHROOT_Are_Configured(t *testing.T) {
+	t.Parallel()
+
+	env := newE2EEnv(t)
+
+	roundDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(roundDir, "x"), []byte("inside\n"), 0o644)
+
+	err := os.Symlink(".", filepath.Join(roundDir, "dot"))
+	if err != nil {
+		t.Fatalf("create dot symlink: %v", err)
+	}
+
+	err = os.Symlink("/", filepath.Join(roundDir, "abs"))
+	if err != nil {
+		t.Fatalf("create abs symlink: %v", err)
+	}
+
+	helperPath := mustBuildStaticHelperBinary(t, chrootHelperSource)
+
+	cfg := sandbox.Config{
+		BaseFS: sandbox.BaseFSHost,
+		Process: sandbox.Process{
+			UID:     uint32Ptr(0),
+			GID:     uint32Ptr(0),
+			AddCaps: []sandbox.Capability{sandbox.CapabilitySysChroot},
+		},
+		Filesystem: sandbox.Filesystem{
+			Presets: []string{"!@all"},
+			Mounts: []sandbox.Mount{
+				sandbox.Bind(roundDir, "/run/round"),
+			},
+		},
+	}
+
+	s := mustNewSandbox(t, &cfg, env)
+	res := runSandboxed(t, s, []string{helperPath}, nil)
+
+	if res.exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstdout:\n%s\nstderr:\n%s", res.exitCode, res.stdout, res.stderr)
+	}
+
+	expectedLines := []string{
+		"cwd=/",
+		`/x="inside\n"`,
+		`dot/../x="inside\n"`,
+		`abs/x="inside\n"`,
+		`./dot/../x="inside\n"`,
+	}
+
+	for _, expected := range expectedLines {
+		if !strings.Contains(res.stdout, expected) {
+			t.Fatalf("expected stdout to contain %q, got:\n%s", expected, res.stdout)
+		}
+	}
 }
 
 func Test_SandboxE2E_Wraps_Command_When_Target_Is_Symlink(t *testing.T) {
@@ -180,6 +273,29 @@ func runSandboxed(t *testing.T, s *sandbox.Sandbox, argv []string, stdin io.Read
 	}
 
 	return runResult{stdout: outBuf.String(), stderr: errBuf.String(), exitCode: code}
+}
+
+func mustBuildStaticHelperBinary(t *testing.T, source string) string {
+	t.Helper()
+
+	helperDir := t.TempDir()
+
+	mustWriteFile(t, filepath.Join(helperDir, "go.mod"), []byte("module sandbox-e2e-helper\n\ngo 1.25.5\n"), 0o644)
+	mustWriteFile(t, filepath.Join(helperDir, "main.go"), []byte(source), 0o644)
+
+	helperPath := filepath.Join(helperDir, "helper")
+
+	cmd := exec.Command("go", "build", "-o", helperPath, ".")
+	cmd.Dir = helperDir
+
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build helper: %v\n%s", err, output)
+	}
+
+	return helperPath
 }
 
 func Test_SandboxE2E_Propagates_Environment_When_Custom_Vars_Set(t *testing.T) {

@@ -154,6 +154,8 @@ func (p *planner) build() (*plan, error) {
 		p.appendArgs("--share-net")
 	}
 
+	p.appendProcessArgs()
+
 	dockerEnabled := p.cfg.Docker != nil && *p.cfg.Docker
 
 	rootMode := p.cfg.BaseFS
@@ -314,6 +316,26 @@ func (p *planner) appendArgs(parts ...string) {
 
 func (p *planner) appendMount(flag, src, dst string) {
 	p.args = append(p.args, flag, src, dst)
+}
+
+func (p *planner) appendProcessArgs() {
+	if p.cfg.Process.UID != nil {
+		p.appendArgs("--uid", strconv.FormatUint(uint64(*p.cfg.Process.UID), 10))
+	}
+
+	if p.cfg.Process.GID != nil {
+		p.appendArgs("--gid", strconv.FormatUint(uint64(*p.cfg.Process.GID), 10))
+	}
+
+	// Emit drops before adds so callers can express allowlists such as
+	// DropCaps=["ALL"], AddCaps=["CAP_SYS_CHROOT"].
+	for _, cap := range p.cfg.Process.DropCaps {
+		p.appendArgs("--cap-drop", string(cap))
+	}
+
+	for _, cap := range p.cfg.Process.AddCaps {
+		p.appendArgs("--cap-add", string(cap))
+	}
 }
 
 func (p *planner) appendTmpfs(dst string) {

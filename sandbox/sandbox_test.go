@@ -1651,6 +1651,137 @@ func Test_Sandbox_NewWithEnvironment_Returns_Error_When_RootMode_Invalid(t *test
 	}
 }
 
+func Test_Sandbox_NewWithEnvironment_Returns_Error_When_ProcessCapability_Invalid(t *testing.T) {
+	t.Parallel()
+
+	env := sandbox.Environment{
+		HomeDir: t.TempDir(),
+		WorkDir: t.TempDir(),
+		HostEnv: map[string]string{"PATH": "/bin"},
+	}
+
+	testCases := []struct {
+		name string
+		cfg  sandbox.Config
+		want string
+	}{
+		{
+			name: "Empty_AddCapability",
+			cfg: sandbox.Config{
+				Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+				Process: sandbox.Process{
+					AddCaps: []sandbox.Capability{""},
+				},
+			},
+			want: "process AddCaps[0] is empty",
+		},
+		{
+			name: "Capability_With_Whitespace",
+			cfg: sandbox.Config{
+				Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+				Process: sandbox.Process{
+					AddCaps: []sandbox.Capability{"CAP_SYS CHROOT"},
+				},
+			},
+			want: "must not contain whitespace",
+		},
+		{
+			name: "Capability_Missing_Prefix",
+			cfg: sandbox.Config{
+				Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+				Process: sandbox.Process{
+					AddCaps: []sandbox.Capability{"SYS_CHROOT"},
+				},
+			},
+			want: "must start with CAP_",
+		},
+		{
+			name: "Capability_Invalid_Characters",
+			cfg: sandbox.Config{
+				Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+				Process: sandbox.Process{
+					AddCaps: []sandbox.Capability{"CAP_sys_chroot"},
+				},
+			},
+			want: "contains invalid character",
+		},
+		{
+			name: "Duplicate_AddCapability",
+			cfg: sandbox.Config{
+				Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+				Process: sandbox.Process{
+					AddCaps: []sandbox.Capability{
+						sandbox.CapabilitySysChroot,
+						sandbox.CapabilitySysChroot,
+					},
+				},
+			},
+			want: "is duplicated",
+		},
+		{
+			name: "Duplicate_DropCapability",
+			cfg: sandbox.Config{
+				Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+				Process: sandbox.Process{
+					DropCaps: []sandbox.Capability{
+						"CAP_NET_RAW",
+						"CAP_NET_RAW",
+					},
+				},
+			},
+			want: "is duplicated",
+		},
+		{
+			name: "Capability_In_Both_Add_And_Drop",
+			cfg: sandbox.Config{
+				Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+				Process: sandbox.Process{
+					AddCaps:  []sandbox.Capability{sandbox.CapabilitySysChroot},
+					DropCaps: []sandbox.Capability{sandbox.CapabilitySysChroot},
+				},
+			},
+			want: "cannot appear in both AddCaps and DropCaps",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := sandbox.NewWithEnvironment(&testCase.cfg, env)
+			if err == nil {
+				t.Fatal("expected error for invalid process capability")
+			}
+
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected error containing %q, got %v", testCase.want, err)
+			}
+		})
+	}
+}
+
+func Test_Sandbox_NewWithEnvironment_Allows_ProcessCapability_All_When_Configured(t *testing.T) {
+	t.Parallel()
+
+	cfg := sandbox.Config{
+		Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+		Process: sandbox.Process{
+			AddCaps:  []sandbox.Capability{"ALL"},
+			DropCaps: []sandbox.Capability{"CAP_NET_RAW"},
+		},
+	}
+	env := sandbox.Environment{
+		HomeDir: t.TempDir(),
+		WorkDir: t.TempDir(),
+		HostEnv: map[string]string{"PATH": "/bin"},
+	}
+
+	_, err := sandbox.NewWithEnvironment(&cfg, env)
+	if err != nil {
+		t.Fatalf("expected ALL capability token to be accepted, got %v", err)
+	}
+}
+
 func Test_Sandbox_CommandWrappers_Returns_Error_When_Command_Missing(t *testing.T) {
 	t.Parallel()
 
@@ -2203,6 +2334,10 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
+func uint32Ptr(value uint32) *uint32 {
+	return &value
+}
+
 func containsSubsequence(haystack []string, needle []string) bool {
 	if len(needle) == 0 {
 		return true
@@ -2401,6 +2536,88 @@ func Test_Sandbox_BaseArgs_IncludeCoreFlags_When_MinimalConfig(t *testing.T) {
 	}
 
 	mustContainSubsequence(t, args, []string{"--chdir", env.WorkDir})
+}
+
+func Test_Sandbox_BaseArgs_IncludeProcessFlags_When_Configured(t *testing.T) {
+	t.Parallel()
+
+	env, _ := newEnvWithHostEnv(t, nil)
+
+	cfg := sandbox.Config{
+		Network: boolPtr(true),
+		Docker:  boolPtr(false),
+		Process: sandbox.Process{
+			UID:      uint32Ptr(0),
+			GID:      uint32Ptr(0),
+			AddCaps:  []sandbox.Capability{sandbox.CapabilitySysChroot},
+			DropCaps: []sandbox.Capability{"CAP_NET_RAW"},
+		},
+		Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+	}
+
+	cmd, _ := mustCommand(t, &cfg, env, "true")
+	args := bwrapArgsFromCmd(cmd)
+
+	wantPrefix := []string{
+		"--die-with-parent",
+		"--unshare-all",
+		"--share-net",
+		"--uid", "0",
+		"--gid", "0",
+		"--cap-drop", "CAP_NET_RAW",
+		"--cap-add", "CAP_SYS_CHROOT",
+		"--ro-bind", "/", "/",
+		"--dev", "/dev",
+		"--proc", "/proc",
+		"--tmpfs", "/run",
+	}
+
+	if len(args) < len(wantPrefix) {
+		t.Fatalf("args too short for prefix check: want %v, got %v", wantPrefix, args)
+	}
+
+	if !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("prefix mismatch: want %v, got %v", wantPrefix, args[:len(wantPrefix)])
+	}
+}
+
+func Test_Sandbox_BaseArgs_EmitCapabilityDropBeforeAdd_When_Allowlisting(t *testing.T) {
+	t.Parallel()
+
+	env, _ := newEnvWithHostEnv(t, nil)
+
+	cfg := sandbox.Config{
+		Network: boolPtr(true),
+		Docker:  boolPtr(false),
+		Process: sandbox.Process{
+			DropCaps: []sandbox.Capability{"ALL"},
+			AddCaps:  []sandbox.Capability{sandbox.CapabilitySysChroot},
+		},
+		Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+	}
+
+	cmd, _ := mustCommand(t, &cfg, env, "true")
+	args := bwrapArgsFromCmd(cmd)
+
+	wantPrefix := []string{
+		"--die-with-parent",
+		"--unshare-all",
+		"--share-net",
+		"--cap-drop", "ALL",
+		"--cap-add", "CAP_SYS_CHROOT",
+		"--ro-bind", "/", "/",
+		"--dev", "/dev",
+		"--proc", "/proc",
+		"--tmpfs", "/run",
+	}
+
+	if len(args) < len(wantPrefix) {
+		t.Fatalf("args too short for prefix check: want %v, got %v", wantPrefix, args)
+	}
+
+	if !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("prefix mismatch: want %v, got %v", wantPrefix, args[:len(wantPrefix)])
+	}
 }
 
 func Test_Sandbox_BaseArgs_OmitsShareNet_When_NetworkDisabled(t *testing.T) {
