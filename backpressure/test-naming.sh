@@ -40,23 +40,26 @@ get_test_funcs_from_git() {
         /^\+.*func Test/{gsub(/^\+/, "", $0); print file":"line":"$0}
     ') || true
 
-    # Check untracked *_test.go files
-    local untracked_files
-    untracked_files=$(git ls-files --others --exclude-standard '*_test.go') || {
-        echo "Error: git ls-files failed" >&2
-        return 1
-    }
-
     local untracked=""
-    if [ -n "$untracked_files" ]; then
-        # rg returns 1 when no matches - that's valid here
-        local rg_exit
-        untracked=$(echo "$untracked_files" | xargs -r rg -n '^func Test' 2>&1) && rg_exit=0 || rg_exit=$?
-        if [ "$rg_exit" -gt 1 ]; then
-            echo "Error: rg failed on untracked files: $untracked" >&2
-            return 1
-        fi
-    fi
+    local output stderr_file exit_code file
+    stderr_file=$(mktemp)
+    trap 'rm -f "$stderr_file"' RETURN
+
+    while IFS= read -r -d '' file; do
+        output=$(rg -n --with-filename '^func Test' "$file" 2>"$stderr_file") && exit_code=0 || exit_code=$?
+
+        case $exit_code in
+            0)
+                untracked="${untracked}${untracked:+$'\n'}${output}"
+                ;;
+            1)
+                ;;
+            *)
+                echo "Error: rg failed on untracked file $file: $(cat "$stderr_file")" >&2
+                return 1
+                ;;
+        esac
+    done < <(git ls-files --others --exclude-standard -z -- '*_test.go')
 
     result="${changed}${changed:+$'\n'}${untracked}"
     echo "$result" | sed '/^$/d'
