@@ -243,12 +243,8 @@ func newRoBindDataBackingFile() (*os.File, error) {
 		}
 
 		if uint64(fd) > uint64(^uintptr(0)) {
-			closeErr := unix.Close(fd)
-
-			return nil, errors.Join(
-				internalErrorf("newRoBindDataBackingFile", "fd %d exceeds uintptr range", fd),
-				closeErr,
-			)
+			_ = unix.Close(fd)
+			panic(internalErrorf("newRoBindDataBackingFile", "fd %d exceeds uintptr range", fd))
 		}
 
 		memFile := os.NewFile(uintptr(fd), "sandbox-ro-bind-data")
