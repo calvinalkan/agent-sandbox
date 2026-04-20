@@ -59,6 +59,7 @@ func expandPresets(presets []string, env Environment) ([]Mount, error) {
 	if enabled["@caches"] {
 		mounts = append(mounts,
 			RWTry("~/.cache"),
+			RWTry("~/.cache/go-build"),
 			RWTry("~/.bun"),
 			RWTry("~/go"),
 			RWTry("~/.npm"),

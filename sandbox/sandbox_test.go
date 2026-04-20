@@ -3107,7 +3107,7 @@ func Test_Sandbox_Presets_EmitExpectedMounts_When_CachesEnabled(t *testing.T) {
 
 	env, _ := newEnvWithHostEnv(t, nil)
 
-	paths := []string{filepath.Join(env.HomeDir, ".cache"), filepath.Join(env.HomeDir, ".bun"), filepath.Join(env.HomeDir, "go"), filepath.Join(env.HomeDir, ".npm"), filepath.Join(env.HomeDir, ".cargo")}
+	paths := []string{filepath.Join(env.HomeDir, ".cache"), filepath.Join(env.HomeDir, ".cache", "go-build"), filepath.Join(env.HomeDir, ".bun"), filepath.Join(env.HomeDir, "go"), filepath.Join(env.HomeDir, ".npm"), filepath.Join(env.HomeDir, ".cargo")}
 	for _, p := range paths {
 		mustCreateDir(t, p)
 	}

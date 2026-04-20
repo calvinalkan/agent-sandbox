@@ -262,7 +262,7 @@ Presets are built-in named configurations for filesystem access. Users cannot de
 | Preset | Description |
 |--------|-------------|
 | `@base` | Core sandbox: working directory writable, home directory read-only, temp writable, secrets excluded (~/.ssh, ~/.gnupg, ~/.aws), sandbox config protected |
-| `@caches` | Build tool caches writable (~/.cache, ~/.bun, ~/go, ~/.npm, ~/.cargo) |
+| `@caches` | Build tool caches writable (~/.cache, ~/.cache/go-build, ~/.bun, ~/go, ~/.npm, ~/.cargo) |
 | `@agents` | AI coding agent configs writable (~/.codex, ~/.claude, ~/.claude.json, ~/.pi) |
 | `@git` | Git hooks and config protected (.git/hooks, .git/config), with automatic worktree support |
 | `@git-strict` | Git metadata protected more aggressively: tags and non-current branch refs are read-only (current branch remains writable); supports worktrees |
