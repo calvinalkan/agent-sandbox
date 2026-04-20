@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -708,12 +707,12 @@ func mountPlanFromResolved(resolved []resolvedRule) (mountPlan, error) {
 	// Sort from shallowest destination to deepest so that parent mounts are applied
 	// before child mounts. This is crucial for correctness: later mounts can
 	// re-expose paths inside excluded directories.
-	sort.Slice(specs, func(i, j int) bool {
-		if specs[i].pathDepth != specs[j].pathDepth {
-			return specs[i].pathDepth < specs[j].pathDepth
+	slices.SortFunc(specs, func(left, right mountSpec) int {
+		if left.pathDepth != right.pathDepth {
+			return left.pathDepth - right.pathDepth
 		}
 
-		return specs[i].mount.Dst < specs[j].mount.Dst
+		return strings.Compare(left.mount.Dst, right.mount.Dst)
 	})
 
 	return mountPlan{specs: specs, needsEmptyFile: needsEmptyFile}, nil
@@ -725,21 +724,21 @@ func mountPlanFromResolved(resolved []resolvedRule) (mountPlan, error) {
 // shadowing (parents are mounted before children).
 func mountPlanFromExtra(mounts []Mount, paths pathResolver) (mountPlan, error) {
 	extra := slices.Clone(mounts)
-	sort.Slice(extra, func(left, right int) bool {
-		di, dj := paths.Depth(extra[left].Dst), paths.Depth(extra[right].Dst)
+	slices.SortFunc(extra, func(left, right Mount) int {
+		di, dj := paths.Depth(left.Dst), paths.Depth(right.Dst)
 		if di != dj {
-			return di < dj
+			return di - dj
 		}
 
-		if extra[left].Dst != extra[right].Dst {
-			return extra[left].Dst < extra[right].Dst
+		if left.Dst != right.Dst {
+			return strings.Compare(left.Dst, right.Dst)
 		}
 
-		if extra[left].Kind != extra[right].Kind {
-			return extra[left].Kind < extra[right].Kind
+		if left.Kind != right.Kind {
+			return int(left.Kind) - int(right.Kind)
 		}
 
-		return extra[left].Src < extra[right].Src
+		return strings.Compare(left.Src, right.Src)
 	})
 
 	specs := make([]mountSpec, 0, len(extra))

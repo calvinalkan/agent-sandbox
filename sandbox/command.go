@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"sort"
 	"strconv"
 	"sync"
 
@@ -140,7 +139,7 @@ func envMapToSliceSorted(env map[string]string) []string {
 		keys = append(keys, k)
 	}
 
-	sort.Strings(keys)
+	slices.Sort(keys)
 
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
@@ -239,6 +238,19 @@ func newRoBindDataBackingFile() (*os.File, error) {
 	// Prefer an anonymous in-memory file when possible to avoid filesystem I/O.
 	fd, err := unix.MemfdCreate("sandbox-ro-bind-data", unix.MFD_CLOEXEC)
 	if err == nil {
+		if fd < 0 {
+			return nil, internalErrorf("newRoBindDataBackingFile", "memfd_create returned negative fd %d", fd)
+		}
+
+		if uint64(fd) > uint64(^uintptr(0)) {
+			closeErr := unix.Close(fd)
+
+			return nil, errors.Join(
+				internalErrorf("newRoBindDataBackingFile", "fd %d exceeds uintptr range", fd),
+				closeErr,
+			)
+		}
+
 		memFile := os.NewFile(uintptr(fd), "sandbox-ro-bind-data")
 		if memFile == nil {
 			closeErr := unix.Close(fd)

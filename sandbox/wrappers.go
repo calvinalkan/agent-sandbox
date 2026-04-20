@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -93,7 +93,7 @@ func buildCommandWrapperPlan(cmdsCfg Commands, env Environment, paths pathResolv
 		allCmdNames = append(allCmdNames, name)
 	}
 
-	sort.Strings(allCmdNames)
+	slices.Sort(allCmdNames)
 
 	if debugf != nil {
 		debugf("wrappers: blocked=%d wrapped=%d", len(cmdsCfg.Block), len(cmdsCfg.Wrappers))
@@ -174,7 +174,7 @@ func buildCommandWrapperPlan(cmdsCfg Commands, env Environment, paths pathResolv
 		wrapperNames = append(wrapperNames, name)
 	}
 
-	sort.Strings(wrapperNames)
+	slices.Sort(wrapperNames)
 
 	for _, cmdName := range wrapperNames {
 		wrapper := cmdsCfg.Wrappers[cmdName]
