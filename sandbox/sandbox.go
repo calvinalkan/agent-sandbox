@@ -393,7 +393,7 @@ const (
 //     path traverses symlinks (for example, /var/run -> /run). If you need explicit
 //     control over the sandbox destination path, use a direct mount (RoBind/Bind/etc.).
 //
-//   - Direct mounts (RoBind, Bind, Tmpfs, Dir, RoBindData, ...): these require
+//   - Direct mounts (RoBind, Bind, DevBind, Tmpfs, Dir, RoBindData, ...): these require
 //     absolute paths and are appended after policy mounts in a deterministic order.
 //
 // Policy precedence rules:
@@ -501,6 +501,13 @@ const (
 	// MountBindTry adds a read-write bind mount that is skipped if missing
 	// (--bind-try).
 	MountBindTry
+
+	// MountDevBind adds a device bind mount (--dev-bind).
+	MountDevBind
+
+	// MountDevBindTry adds a device bind mount that is skipped if missing
+	// (--dev-bind-try).
+	MountDevBindTry
 
 	// MountTmpfs mounts an empty tmpfs at Dst (--tmpfs).
 	MountTmpfs
@@ -618,6 +625,18 @@ func Bind(src, dst string) Mount {
 // that is skipped if src does not exist.
 func BindTry(src, dst string) Mount {
 	return Mount{Kind: MountBindTry, Src: src, Dst: dst}
+}
+
+// DevBind returns a device bind mount from src (host path) to dst (sandbox path)
+// using bubblewrap's --dev-bind.
+func DevBind(src, dst string) Mount {
+	return Mount{Kind: MountDevBind, Src: src, Dst: dst}
+}
+
+// DevBindTry returns a device bind mount from src (host path) to dst (sandbox path)
+// using bubblewrap's --dev-bind-try. The mount is skipped if src does not exist.
+func DevBindTry(src, dst string) Mount {
+	return Mount{Kind: MountDevBindTry, Src: src, Dst: dst}
 }
 
 // Tmpfs returns an empty tmpfs mount at dst (sandbox path).

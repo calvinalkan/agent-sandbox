@@ -1458,6 +1458,7 @@ func Test_Sandbox_DirectMounts_Appear_When_Configured(t *testing.T) {
 		Mounts: []sandbox.Mount{
 			sandbox.RoBind("/bin", "/mnt/ro"),
 			sandbox.Bind("/bin", "/mnt/rw"),
+			sandbox.DevBind("/dev/null", "/mnt/devnull"),
 			sandbox.Tmpfs("/mnt/tmp"),
 			sandbox.Dir("/mnt/dir"),
 		},
@@ -1467,6 +1468,7 @@ func Test_Sandbox_DirectMounts_Appear_When_Configured(t *testing.T) {
 
 	mustContainSubsequence(t, cmd.Args, []string{"--ro-bind", "/bin", "/mnt/ro"})
 	mustContainSubsequence(t, cmd.Args, []string{"--bind", "/bin", "/mnt/rw"})
+	mustContainSubsequence(t, cmd.Args, []string{"--dev-bind", "/dev/null", "/mnt/devnull"})
 	mustContainSubsequence(t, cmd.Args, []string{"--tmpfs", "/mnt/tmp"})
 	mustContainSubsequence(t, cmd.Args, []string{"--dir", "/mnt/dir"})
 }
@@ -1494,6 +1496,7 @@ func Test_Sandbox_DirectMounts_SkipMissing_When_Try(t *testing.T) {
 
 	missingRo := filepath.Join(workDir, "missing-ro")
 	missingRw := filepath.Join(workDir, "missing-rw")
+	missingDev := filepath.Join(workDir, "missing-dev")
 
 	cfg := sandbox.Config{
 		Filesystem: sandbox.Filesystem{
@@ -1501,6 +1504,7 @@ func Test_Sandbox_DirectMounts_SkipMissing_When_Try(t *testing.T) {
 			Mounts: []sandbox.Mount{
 				sandbox.RoBindTry(missingRo, "/mnt/ro"),
 				sandbox.BindTry(missingRw, "/mnt/rw"),
+				sandbox.DevBindTry(missingDev, "/mnt/dev"),
 			},
 		},
 	}
@@ -1529,12 +1533,20 @@ func Test_Sandbox_DirectMounts_SkipMissing_When_Try(t *testing.T) {
 		t.Fatalf("expected BindTry source to be skipped, args: %v", cmd.Args)
 	}
 
+	if slices.Contains(cmd.Args, missingDev) {
+		t.Fatalf("expected DevBindTry source to be skipped, args: %v", cmd.Args)
+	}
+
 	if slices.Contains(cmd.Args, "/mnt/ro") {
 		t.Fatalf("expected RoBindTry destination to be skipped, args: %v", cmd.Args)
 	}
 
 	if slices.Contains(cmd.Args, "/mnt/rw") {
 		t.Fatalf("expected BindTry destination to be skipped, args: %v", cmd.Args)
+	}
+
+	if slices.Contains(cmd.Args, "/mnt/dev") {
+		t.Fatalf("expected DevBindTry destination to be skipped, args: %v", cmd.Args)
 	}
 }
 
@@ -2104,6 +2116,11 @@ func Test_Sandbox_NewWithEnvironment_Returns_Error_When_Mount_Invalid(t *testing
 			want:   "requires a source path",
 		},
 		{
+			name:   "DevBindRelativeDest",
+			mounts: []sandbox.Mount{sandbox.DevBind("/dev/null", "relative")},
+			want:   "not absolute",
+		},
+		{
 			name:   "RoBindDataMissingFD",
 			mounts: []sandbox.Mount{{Kind: sandbox.MountRoBindData, Dst: "/data", FD: 0, Perms: 0o644}},
 			want:   "requires a positive FD",
@@ -2133,371 +2150,6 @@ func Test_Sandbox_NewWithEnvironment_Returns_Error_When_Mount_Invalid(t *testing
 			}
 		})
 	}
-}
-
-func mustNewSandbox(t *testing.T, cfg *sandbox.Config, env sandbox.Environment) *sandbox.Sandbox {
-	t.Helper()
-
-	// Auto-set launcher binary for tests that use command wrappers.
-	// We use /bin/true as a placeholder because:
-	// 1. It exists on all Linux systems and passes file validation
-	// 2. Unit tests only verify mount arguments, not actual wrapper execution
-	// 3. Actual wrapper behavior (blocking, scripts) is tested via CLI E2E tests
-	//    which use the real agent-sandbox binary with RunBinary()
-	if (len(cfg.Commands.Block) > 0 || len(cfg.Commands.Wrappers) > 0) && cfg.Commands.Launcher == "" {
-		cfg.Commands.Launcher = testLauncherPath
-		// Set MountPath explicitly to match test expectations (otherwise it auto-derives as /run/true)
-		cfg.Commands.MountPath = testRuntimeMountPath
-	}
-
-	s, err := sandbox.NewWithEnvironment(cfg, env)
-	if err != nil {
-		t.Fatalf("NewWithEnvironment: %v", err)
-	}
-
-	return s
-}
-
-func mustNewSandboxWithPathCommands(t *testing.T, workDir, homeDir, binDir string, commands map[string]sandbox.Wrapper) *sandbox.Sandbox {
-	t.Helper()
-
-	env := sandbox.Environment{
-		HomeDir: homeDir,
-		WorkDir: workDir,
-		HostEnv: map[string]string{"PATH": binDir},
-	}
-
-	cfg := sandbox.Config{
-		Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
-		Commands: sandbox.Commands{
-			Wrappers:  commands,
-			Launcher:  "/bin/true",
-			MountPath: "/run/agent-sandbox",
-		},
-	}
-
-	return mustNewSandbox(t, &cfg, env)
-}
-
-type testEnv struct {
-	sandbox *sandbox.Sandbox
-	cfg     sandbox.Config
-	env     sandbox.Environment
-	homeDir string
-	workDir string
-	binDir  string
-	tempDir string
-}
-
-type testEnvConfig struct {
-	Config      *sandbox.Config
-	Block       []string
-	Wrappers    map[string]sandbox.Wrapper
-	Mounts      []sandbox.Mount
-	IncludePath *bool
-}
-
-func (env *testEnv) mustSandbox(t *testing.T) *sandbox.Sandbox {
-	t.Helper()
-
-	if env.sandbox == nil {
-		env.sandbox = mustNewSandbox(t, &env.cfg, env.env)
-	}
-
-	return env.sandbox
-}
-
-func (env *testEnv) mustCommand(t *testing.T, args ...string) *exec.Cmd {
-	t.Helper()
-
-	cmd, cleanup, err := env.mustSandbox(t).Command(t.Context(), args)
-	if err != nil {
-		t.Fatalf("Command: %v", err)
-	}
-
-	if cleanup != nil {
-		t.Cleanup(func() { _ = cleanup() })
-	}
-
-	return cmd
-}
-
-func (env *testEnv) mustWriteBinFile(t *testing.T, name string, data []byte) string {
-	t.Helper()
-
-	path := filepath.Join(env.binDir, name)
-	mustWriteFile(t, path, data, 0o755)
-
-	return path
-}
-
-func (env *testEnv) mustWriteWorkFile(t *testing.T, name string, data []byte, perm os.FileMode) string {
-	t.Helper()
-
-	path := filepath.Join(env.workDir, name)
-	mustWriteFile(t, path, data, perm)
-
-	return path
-}
-
-func newTestEnv(t *testing.T, cfg testEnvConfig) testEnv {
-	t.Helper()
-
-	config := sandbox.Config{}
-	if cfg.Config != nil {
-		config = *cfg.Config
-	} else {
-		config.Filesystem.Presets = []string{"!@all"}
-	}
-
-	if cfg.Block != nil || cfg.Wrappers != nil {
-		config.Commands = sandbox.Commands{
-			Block:     cfg.Block,
-			Wrappers:  cfg.Wrappers,
-			Launcher:  "/bin/true",
-			MountPath: "/run/agent-sandbox",
-		}
-	}
-
-	if cfg.Mounts != nil {
-		config.Filesystem.Mounts = cfg.Mounts
-	}
-
-	includePath := true
-	if cfg.IncludePath != nil {
-		includePath = *cfg.IncludePath
-	}
-
-	homeDir := t.TempDir()
-	workDir := t.TempDir()
-	tempDir := t.TempDir()
-	binDir := filepath.Join(workDir, "bin")
-	mustCreateDir(t, binDir)
-
-	env := sandbox.Environment{HomeDir: homeDir, WorkDir: workDir, HostEnv: map[string]string{}}
-	if includePath {
-		env.HostEnv["PATH"] = binDir
-	}
-
-	return testEnv{
-		cfg:     config,
-		env:     env,
-		homeDir: homeDir,
-		workDir: workDir,
-		binDir:  binDir,
-		tempDir: tempDir,
-	}
-}
-
-func mustCreateDir(t *testing.T, path string) {
-	t.Helper()
-
-	err := os.MkdirAll(path, 0o755)
-	if err != nil {
-		t.Fatalf("mkdir %q: %v", path, err)
-	}
-}
-
-func mustCreateExecutable(t *testing.T, path string) {
-	t.Helper()
-	mustCreateDir(t, filepath.Dir(path))
-	mustWriteFile(t, path, []byte("#!/bin/sh\necho hello\n"), 0o755)
-}
-
-func mustSymlink(t *testing.T, target, link string) {
-	t.Helper()
-
-	err := os.Symlink(target, link)
-	if err != nil {
-		t.Fatalf("failed to create symlink %s -> %s: %v", link, target, err)
-	}
-}
-
-func mustWriteFile(t *testing.T, path string, data []byte, perm os.FileMode) {
-	t.Helper()
-
-	err := os.WriteFile(path, data, perm)
-	if err != nil {
-		t.Fatalf("write %q: %v", path, err)
-	}
-}
-
-func mustContainSubsequence(t *testing.T, haystack []string, needle []string) {
-	t.Helper()
-
-	if !containsSubsequence(haystack, needle) {
-		t.Fatalf("expected args to contain %v\nargs: %v", needle, haystack)
-	}
-}
-
-func boolPtr(value bool) *bool {
-	return &value
-}
-
-func uint32Ptr(value uint32) *uint32 {
-	return &value
-}
-
-func containsSubsequence(haystack []string, needle []string) bool {
-	if len(needle) == 0 {
-		return true
-	}
-
-	if len(haystack) < len(needle) {
-		return false
-	}
-
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		ok := true
-
-		for j := range needle {
-			if haystack[i+j] != needle[j] {
-				ok = false
-
-				break
-			}
-		}
-
-		if ok {
-			return true
-		}
-	}
-
-	return false
-}
-
-func indexOfSubsequence(haystack []string, needle []string) int {
-	if len(needle) == 0 {
-		return 0
-	}
-
-	if len(haystack) < len(needle) {
-		return -1
-	}
-
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		ok := true
-
-		for j := range needle {
-			if haystack[i+j] != needle[j] {
-				ok = false
-
-				break
-			}
-		}
-
-		if ok {
-			return i
-		}
-	}
-
-	return -1
-}
-
-// ============================================================================
-// bwrap_args_test.go ported coverage
-// ============================================================================
-
-func bwrapArgsFromCmd(cmd *exec.Cmd) []string {
-	args := slices.Clone(cmd.Args)
-	if len(args) == 0 {
-		return nil
-	}
-
-	if filepath.Base(args[0]) == "bwrap" {
-		args = args[1:]
-	}
-
-	for i, a := range args {
-		if a == "--" {
-			return args[:i]
-		}
-	}
-
-	return args
-}
-
-func mustCommand(t *testing.T, cfg *sandbox.Config, env sandbox.Environment, command ...string) (*exec.Cmd, int) {
-	t.Helper()
-	s := mustNewSandbox(t, cfg, env)
-
-	cmd, cleanup, err := s.Command(t.Context(), command)
-	if cleanup != nil {
-		t.Cleanup(func() { _ = cleanup() })
-	}
-
-	if err != nil {
-		t.Fatalf("Command: %v", err)
-	}
-
-	return cmd, len(cmd.ExtraFiles)
-}
-
-func mustCommandError(t *testing.T, cfg *sandbox.Config, env sandbox.Environment, wantSubstring string, command ...string) {
-	t.Helper()
-
-	// Mirror mustNewSandbox's test conveniences so callers don't need to set a
-	// launcher binary when using command wrappers.
-	if (len(cfg.Commands.Block) > 0 || len(cfg.Commands.Wrappers) > 0) && cfg.Commands.Launcher == "" {
-		cfg.Commands.Launcher = testLauncherPath
-		cfg.Commands.MountPath = testRuntimeMountPath
-	}
-
-	s, newErr := sandbox.NewWithEnvironment(cfg, env)
-	if newErr != nil {
-		if !strings.Contains(newErr.Error(), wantSubstring) {
-			t.Fatalf("expected error containing %q, got %v", wantSubstring, newErr)
-		}
-
-		return
-	}
-
-	cmd, cleanup, err := s.Command(t.Context(), command)
-	if cleanup != nil {
-		_ = cleanup()
-	}
-
-	if err == nil {
-		if cmd != nil {
-			t.Fatalf("expected error containing %q, got nil (cmd.Args=%v)", wantSubstring, cmd.Args)
-		}
-
-		t.Fatalf("expected error containing %q, got nil", wantSubstring)
-	}
-
-	if !strings.Contains(err.Error(), wantSubstring) {
-		t.Fatalf("expected error containing %q, got %v", wantSubstring, err)
-	}
-}
-
-func newEnvWithHostEnv(t *testing.T, hostEnv map[string]string) (sandbox.Environment, string) {
-	t.Helper()
-
-	homeDir := t.TempDir()
-	workDir := t.TempDir()
-	binDir := filepath.Join(workDir, "bin")
-	mustCreateDir(t, binDir)
-
-	env := sandbox.Environment{
-		HomeDir: homeDir,
-		WorkDir: workDir,
-		HostEnv: map[string]string{"PATH": binDir},
-	}
-	maps.Copy(env.HostEnv, hostEnv)
-
-	return env, binDir
-}
-
-func countOccurrences(args []string, target string) int {
-	count := 0
-
-	for _, a := range args {
-		if a == target {
-			count++
-		}
-	}
-
-	return count
 }
 
 func Test_Sandbox_BaseArgs_IncludeCoreFlags_When_MinimalConfig(t *testing.T) {
@@ -3610,4 +3262,365 @@ func Test_Sandbox_Presets_GitStrict_OmitsCurrentRefWrite_When_DetachedHead(t *te
 	if containsSubsequence(args, []string{"--bind", masterRef, masterRef}) {
 		t.Fatalf("did not expect branch ref to be writable in detached HEAD; args: %v", args)
 	}
+}
+
+func mustNewSandbox(t *testing.T, cfg *sandbox.Config, env sandbox.Environment) *sandbox.Sandbox {
+	t.Helper()
+
+	// Auto-set launcher binary for tests that use command wrappers.
+	// We use /bin/true as a placeholder because:
+	// 1. It exists on all Linux systems and passes file validation
+	// 2. Unit tests only verify mount arguments, not actual wrapper execution
+	// 3. Actual wrapper behavior (blocking, scripts) is tested via CLI E2E tests
+	//    which use the real agent-sandbox binary with RunBinary()
+	if (len(cfg.Commands.Block) > 0 || len(cfg.Commands.Wrappers) > 0) && cfg.Commands.Launcher == "" {
+		cfg.Commands.Launcher = testLauncherPath
+		// Set MountPath explicitly to match test expectations (otherwise it auto-derives as /run/true)
+		cfg.Commands.MountPath = testRuntimeMountPath
+	}
+
+	s, err := sandbox.NewWithEnvironment(cfg, env)
+	if err != nil {
+		t.Fatalf("NewWithEnvironment: %v", err)
+	}
+
+	return s
+}
+
+func mustNewSandboxWithPathCommands(t *testing.T, workDir, homeDir, binDir string, commands map[string]sandbox.Wrapper) *sandbox.Sandbox {
+	t.Helper()
+
+	env := sandbox.Environment{
+		HomeDir: homeDir,
+		WorkDir: workDir,
+		HostEnv: map[string]string{"PATH": binDir},
+	}
+
+	cfg := sandbox.Config{
+		Filesystem: sandbox.Filesystem{Presets: []string{"!@all"}},
+		Commands: sandbox.Commands{
+			Wrappers:  commands,
+			Launcher:  "/bin/true",
+			MountPath: "/run/agent-sandbox",
+		},
+	}
+
+	return mustNewSandbox(t, &cfg, env)
+}
+
+type testEnv struct {
+	sandbox *sandbox.Sandbox
+	cfg     sandbox.Config
+	env     sandbox.Environment
+	homeDir string
+	workDir string
+	binDir  string
+	tempDir string
+}
+
+type testEnvConfig struct {
+	Config      *sandbox.Config
+	Block       []string
+	Wrappers    map[string]sandbox.Wrapper
+	Mounts      []sandbox.Mount
+	IncludePath *bool
+}
+
+func (env *testEnv) mustSandbox(t *testing.T) *sandbox.Sandbox {
+	t.Helper()
+
+	if env.sandbox == nil {
+		env.sandbox = mustNewSandbox(t, &env.cfg, env.env)
+	}
+
+	return env.sandbox
+}
+
+func (env *testEnv) mustCommand(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+
+	cmd, cleanup, err := env.mustSandbox(t).Command(t.Context(), args)
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	if cleanup != nil {
+		t.Cleanup(func() { _ = cleanup() })
+	}
+
+	return cmd
+}
+
+func (env *testEnv) mustWriteBinFile(t *testing.T, name string, data []byte) string {
+	t.Helper()
+
+	path := filepath.Join(env.binDir, name)
+	mustWriteFile(t, path, data, 0o755)
+
+	return path
+}
+
+func (env *testEnv) mustWriteWorkFile(t *testing.T, name string, data []byte, perm os.FileMode) string {
+	t.Helper()
+
+	path := filepath.Join(env.workDir, name)
+	mustWriteFile(t, path, data, perm)
+
+	return path
+}
+
+func newTestEnv(t *testing.T, cfg testEnvConfig) testEnv {
+	t.Helper()
+
+	config := sandbox.Config{}
+	if cfg.Config != nil {
+		config = *cfg.Config
+	} else {
+		config.Filesystem.Presets = []string{"!@all"}
+	}
+
+	if cfg.Block != nil || cfg.Wrappers != nil {
+		config.Commands = sandbox.Commands{
+			Block:     cfg.Block,
+			Wrappers:  cfg.Wrappers,
+			Launcher:  "/bin/true",
+			MountPath: "/run/agent-sandbox",
+		}
+	}
+
+	if cfg.Mounts != nil {
+		config.Filesystem.Mounts = cfg.Mounts
+	}
+
+	includePath := true
+	if cfg.IncludePath != nil {
+		includePath = *cfg.IncludePath
+	}
+
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	tempDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	mustCreateDir(t, binDir)
+
+	env := sandbox.Environment{HomeDir: homeDir, WorkDir: workDir, HostEnv: map[string]string{}}
+	if includePath {
+		env.HostEnv["PATH"] = binDir
+	}
+
+	return testEnv{
+		cfg:     config,
+		env:     env,
+		homeDir: homeDir,
+		workDir: workDir,
+		binDir:  binDir,
+		tempDir: tempDir,
+	}
+}
+
+func mustCreateDir(t *testing.T, path string) {
+	t.Helper()
+
+	err := os.MkdirAll(path, 0o755)
+	if err != nil {
+		t.Fatalf("mkdir %q: %v", path, err)
+	}
+}
+
+func mustCreateExecutable(t *testing.T, path string) {
+	t.Helper()
+	mustCreateDir(t, filepath.Dir(path))
+	mustWriteFile(t, path, []byte("#!/bin/sh\necho hello\n"), 0o755)
+}
+
+func mustSymlink(t *testing.T, target, link string) {
+	t.Helper()
+
+	err := os.Symlink(target, link)
+	if err != nil {
+		t.Fatalf("failed to create symlink %s -> %s: %v", link, target, err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path string, data []byte, perm os.FileMode) {
+	t.Helper()
+
+	err := os.WriteFile(path, data, perm)
+	if err != nil {
+		t.Fatalf("write %q: %v", path, err)
+	}
+}
+
+func mustContainSubsequence(t *testing.T, haystack []string, needle []string) {
+	t.Helper()
+
+	if !containsSubsequence(haystack, needle) {
+		t.Fatalf("expected args to contain %v\nargs: %v", needle, haystack)
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func uint32Ptr(value uint32) *uint32 {
+	return &value
+}
+
+func containsSubsequence(haystack []string, needle []string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+
+	if len(haystack) < len(needle) {
+		return false
+	}
+
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		ok := true
+
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				ok = false
+
+				break
+			}
+		}
+
+		if ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+func indexOfSubsequence(haystack []string, needle []string) int {
+	if len(needle) == 0 {
+		return 0
+	}
+
+	if len(haystack) < len(needle) {
+		return -1
+	}
+
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		ok := true
+
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				ok = false
+
+				break
+			}
+		}
+
+		if ok {
+			return i
+		}
+	}
+
+	return -1
+}
+
+func bwrapArgsFromCmd(cmd *exec.Cmd) []string {
+	args := slices.Clone(cmd.Args)
+	if len(args) == 0 {
+		return nil
+	}
+
+	if filepath.Base(args[0]) == "bwrap" {
+		args = args[1:]
+	}
+
+	for i, a := range args {
+		if a == "--" {
+			return args[:i]
+		}
+	}
+
+	return args
+}
+
+func mustCommand(t *testing.T, cfg *sandbox.Config, env sandbox.Environment, command ...string) (*exec.Cmd, int) {
+	t.Helper()
+	s := mustNewSandbox(t, cfg, env)
+
+	cmd, cleanup, err := s.Command(t.Context(), command)
+	if cleanup != nil {
+		t.Cleanup(func() { _ = cleanup() })
+	}
+
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	return cmd, len(cmd.ExtraFiles)
+}
+
+func mustCommandError(t *testing.T, cfg *sandbox.Config, env sandbox.Environment, wantSubstring string, command ...string) {
+	t.Helper()
+
+	// Mirror mustNewSandbox's test conveniences so callers don't need to set a
+	// launcher binary when using command wrappers.
+	if (len(cfg.Commands.Block) > 0 || len(cfg.Commands.Wrappers) > 0) && cfg.Commands.Launcher == "" {
+		cfg.Commands.Launcher = testLauncherPath
+		cfg.Commands.MountPath = testRuntimeMountPath
+	}
+
+	s, newErr := sandbox.NewWithEnvironment(cfg, env)
+	if newErr != nil {
+		if !strings.Contains(newErr.Error(), wantSubstring) {
+			t.Fatalf("expected error containing %q, got %v", wantSubstring, newErr)
+		}
+
+		return
+	}
+
+	cmd, cleanup, err := s.Command(t.Context(), command)
+	if cleanup != nil {
+		_ = cleanup()
+	}
+
+	if err == nil {
+		if cmd != nil {
+			t.Fatalf("expected error containing %q, got nil (cmd.Args=%v)", wantSubstring, cmd.Args)
+		}
+
+		t.Fatalf("expected error containing %q, got nil", wantSubstring)
+	}
+
+	if !strings.Contains(err.Error(), wantSubstring) {
+		t.Fatalf("expected error containing %q, got %v", wantSubstring, err)
+	}
+}
+
+func newEnvWithHostEnv(t *testing.T, hostEnv map[string]string) (sandbox.Environment, string) {
+	t.Helper()
+
+	homeDir := t.TempDir()
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	mustCreateDir(t, binDir)
+
+	env := sandbox.Environment{
+		HomeDir: homeDir,
+		WorkDir: workDir,
+		HostEnv: map[string]string{"PATH": binDir},
+	}
+	maps.Copy(env.HostEnv, hostEnv)
+
+	return env, binDir
+}
+
+func countOccurrences(args []string, target string) int {
+	count := 0
+
+	for _, a := range args {
+		if a == target {
+			count++
+		}
+	}
+
+	return count
 }

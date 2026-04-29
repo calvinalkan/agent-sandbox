@@ -189,7 +189,7 @@ func validateMounts(mounts []Mount) []error {
 				errs = append(errs, fmt.Errorf("mount %d (%s) does not accept FD/Perms", i, mountKindName(mount.Kind)))
 			}
 
-		case MountRoBind, MountRoBindTry, MountBind, MountBindTry:
+		case MountRoBind, MountRoBindTry, MountBind, MountBindTry, MountDevBind, MountDevBindTry:
 			if strings.TrimSpace(mount.Dst) == "" {
 				errs = append(errs, fmt.Errorf("mount %d (%s) has empty destination", i, mountKindName(mount.Kind)))
 

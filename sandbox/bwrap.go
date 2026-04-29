@@ -625,7 +625,7 @@ func beatsRule(ruleA, ruleB resolvedRule) bool {
 // Policy mounts are RO/RW/Exclude patterns that are resolved against the host
 // filesystem and translated into low-level mount operations.
 //
-// Direct mounts (RoBind, Bind, Tmpfs, Dir, RoBindData, ...) are appended after
+// Direct mounts (RoBind, Bind, DevBind, Tmpfs, Dir, RoBindData, ...) are appended after
 // policy mounts in a deterministic order.
 func splitFilesystemMounts(mounts []Mount) ([]Mount, []Mount) {
 	policy := make([]Mount, 0, len(mounts))
@@ -749,11 +749,11 @@ func mountPlanFromExtra(mounts []Mount, paths pathResolver) (mountPlan, error) {
 		}
 
 		switch mount.Kind {
-		case MountRoBind, MountRoBindTry, MountBind, MountBindTry:
+		case MountRoBind, MountRoBindTry, MountBind, MountBindTry, MountDevBind, MountDevBindTry:
 			_, statErr := os.Stat(mount.Src)
 			if statErr != nil {
 				if os.IsNotExist(statErr) {
-					if mount.Kind == MountRoBindTry || mount.Kind == MountBindTry {
+					if mount.Kind == MountRoBindTry || mount.Kind == MountBindTry || mount.Kind == MountDevBindTry {
 						continue
 					}
 
@@ -793,6 +793,11 @@ func mountSpecFromExtra(mnt Mount, paths pathResolver) (mountSpec, error) {
 	case MountBind, MountBindTry:
 		if strings.TrimSpace(mnt.Src) == "" || !filepath.IsAbs(mnt.Src) {
 			return mountSpec{}, internalErrorf("mountSpecFromExtra", "bind source %q is invalid (dst=%q kind=%s)", mnt.Src, mnt.Dst, mountKindName(mnt.Kind))
+		}
+
+	case MountDevBind, MountDevBindTry:
+		if strings.TrimSpace(mnt.Src) == "" || !filepath.IsAbs(mnt.Src) {
+			return mountSpec{}, internalErrorf("mountSpecFromExtra", "dev-bind source %q is invalid (dst=%q kind=%s)", mnt.Src, mnt.Dst, mountKindName(mnt.Kind))
 		}
 
 	case MountTmpfs:
@@ -852,6 +857,10 @@ func mountKindName(kind MountKind) string {
 		return "bind"
 	case MountBindTry:
 		return "bind-try"
+	case MountDevBind:
+		return "dev-bind"
+	case MountDevBindTry:
+		return "dev-bind-try"
 	case MountTmpfs:
 		return "tmpfs"
 	case MountDir:
@@ -879,6 +888,10 @@ func mountToArgs(mnt Mount) ([]string, error) {
 		return []string{"--bind", mnt.Src, mnt.Dst}, nil
 	case MountBindTry:
 		return []string{"--bind-try", mnt.Src, mnt.Dst}, nil
+	case MountDevBind:
+		return []string{"--dev-bind", mnt.Src, mnt.Dst}, nil
+	case MountDevBindTry:
+		return []string{"--dev-bind-try", mnt.Src, mnt.Dst}, nil
 	case MountTmpfs:
 		return []string{"--tmpfs", mnt.Dst}, nil
 	case MountDir:
